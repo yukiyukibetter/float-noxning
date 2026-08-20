@@ -4,9 +4,6 @@
 
 export const POSTOFFICE_EVENT = "postoffice-new-messages";
 
-// chat-storage.ts 导出的事件名，硬编码避免循环依赖
-const CHAT_REQUEST_REPLY = "chat-request-reply";
-
 declare global {
     interface Window {
         __postoffice?: {
@@ -75,20 +72,51 @@ function _startGlobalPolling(): void {
 }
 
 /**
- * 全局 LLM 阻断：在 capture 阶段拦截 chat-request-reply 事件，
- * 阻止 ChatRoom 的 triggerAIResponse 被任何路径触发（FollowUp / KeyboardAutoSend / 外部调用）。
- * 同时 commitSendText 内部的 isPostofficeMode() return 阻止 setPendingGenerate(true)。
- * 两层防线确保邮局模式下 LLM 完全不被调用。
+ * 核弹级 LLM 拦截：monkey-patch window.fetch
+ * sendLLMRequest / sendLLMStreamRequest 用的是原生 fetch，不经过 fetchLlmPayload。
+ * 所以必须在 fetch 层拦截。
+ * 
+ * 规则：
+ * - 本站请求（/ 开头或 location.origin）：放行
+ * - 外部 GET 请求：放行（CDN、图片等）
+ * - 外部 POST 请求：拦截（这就是 LLM API 调用）
  */
-function _blockLLMTriggers(): void {
-    console.log("[Postoffice] LLM triggers blocked (capture-phase event interception)");
-    window.addEventListener(CHAT_REQUEST_REPLY, (e) => {
-        e.stopImmediatePropagation();
-        console.log("[Postoffice] Blocked chat-request-reply event");
-    }, true); // capture phase — runs before ChatRoom's bubble-phase listener
+function _patchFetchForPostoffice(): void {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = function patchedFetch(
+        input: RequestInfo | URL,
+        init?: RequestInit,
+    ): Promise<Response> {
+        const url = typeof input === "string"
+            ? input
+            : input instanceof URL
+                ? input.toString()
+                : (input as Request).url;
+
+        const isLocal = url.startsWith("/") || url.startsWith(window.location.origin);
+        const isPost = init?.method?.toUpperCase() === "POST"
+            || (typeof input !== "string" && !(input instanceof URL) && (input as Request).method?.toUpperCase() === "POST");
+
+        if (!isLocal && isPost) {
+            console.log("[Postoffice] ✘ Blocked external POST (LLM):", url.slice(0, 80));
+            // 返回空的 SSE 流式响应，让 chat-engine 的解析器认为生成完成
+            return Promise.resolve(new Response(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+                {
+                    status: 200,
+                    headers: {
+                        "content-type": "text/event-stream",
+                    },
+                },
+            ));
+        }
+
+        return originalFetch(input, init);
+    } as typeof window.fetch;
+    console.log("[Postoffice] ✔ window.fetch patched — external POST requests will be blocked");
 }
 
 if (typeof window !== "undefined" && isPostofficeMode()) {
     _startGlobalPolling();
-    _blockLLMTriggers();
+    _patchFetchForPostoffice();
 }
