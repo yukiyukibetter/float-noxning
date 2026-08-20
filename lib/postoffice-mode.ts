@@ -1,8 +1,23 @@
 // lib/postoffice-mode.ts
 // Float · Nox♡Ning Edition — 邮局模式
-// 全局轮询 + 消息缓存 + 事件广播
+// 所有状态存 window，避免 Next.js 代码分割导致模块重复实例化
 
 export const POSTOFFICE_EVENT = "postoffice-new-messages";
+
+declare global {
+    interface Window {
+        __postoffice?: {
+            started: boolean;
+            pending: any[];
+        };
+    }
+}
+
+function _state() {
+    if (typeof window === "undefined") return { started: false, pending: [] as any[] };
+    if (!window.__postoffice) window.__postoffice = { started: false, pending: [] };
+    return window.__postoffice;
+}
 
 export function isPostofficeMode(): boolean {
     if (typeof window === "undefined") return false;
@@ -22,20 +37,15 @@ export async function sendPostofficeMessage(content: string): Promise<boolean> {
     }
 }
 
-// ── 消息缓存 ──
-const _pendingMessages: any[] = [];
-
 export function drainPendingMessages(): any[] {
-    return _pendingMessages.splice(0);
+    return _state().pending.splice(0);
 }
 
-// ── 全局轮询 ──
-let _started = false;
-
 function _startGlobalPolling(): void {
-    if (_started) return;
-    _started = true;
-    console.log("[Postoffice] Global polling started");
+    const s = _state();
+    if (s.started) return;
+    s.started = true;
+    console.log("[Postoffice] Global polling started (window-state)");
 
     const poll = async () => {
         try {
@@ -44,7 +54,7 @@ function _startGlobalPolling(): void {
             const data = await res.json();
             if (data.messages?.length > 0) {
                 console.log("[Postoffice] New messages:", data.messages.length);
-                _pendingMessages.push(...data.messages);
+                _state().pending.push(...data.messages);
                 window.dispatchEvent(
                     new CustomEvent(POSTOFFICE_EVENT, { detail: { messages: data.messages } }),
                 );
