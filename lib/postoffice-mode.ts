@@ -4,6 +4,9 @@
 
 export const POSTOFFICE_EVENT = "postoffice-new-messages";
 
+// chat-storage.ts 导出的事件名，硬编码避免循环依赖
+const CHAT_REQUEST_REPLY = "chat-request-reply";
+
 declare global {
     interface Window {
         __postoffice?: {
@@ -26,13 +29,16 @@ export function isPostofficeMode(): boolean {
 
 export async function sendPostofficeMessage(content: string): Promise<boolean> {
     try {
+        console.log("[Postoffice] Sending message:", content.slice(0, 50));
         const res = await fetch("/api/float-chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ content }),
         });
+        console.log("[Postoffice] Send result:", res.ok);
         return res.ok;
-    } catch {
+    } catch (err) {
+        console.error("[Postoffice] Send error:", err);
         return false;
     }
 }
@@ -68,6 +74,21 @@ function _startGlobalPolling(): void {
     setInterval(poll, 3000);
 }
 
+/**
+ * 全局 LLM 阻断：在 capture 阶段拦截 chat-request-reply 事件，
+ * 阻止 ChatRoom 的 triggerAIResponse 被任何路径触发（FollowUp / KeyboardAutoSend / 外部调用）。
+ * 同时 commitSendText 内部的 isPostofficeMode() return 阻止 setPendingGenerate(true)。
+ * 两层防线确保邮局模式下 LLM 完全不被调用。
+ */
+function _blockLLMTriggers(): void {
+    console.log("[Postoffice] LLM triggers blocked (capture-phase event interception)");
+    window.addEventListener(CHAT_REQUEST_REPLY, (e) => {
+        e.stopImmediatePropagation();
+        console.log("[Postoffice] Blocked chat-request-reply event");
+    }, true); // capture phase — runs before ChatRoom's bubble-phase listener
+}
+
 if (typeof window !== "undefined" && isPostofficeMode()) {
     _startGlobalPolling();
+    _blockLLMTriggers();
 }
