@@ -14,6 +14,7 @@ import { EmojiPanel, StickerPanel } from "./emoji-panel";
 import { StickerSearchSuggest } from "./sticker-search-suggest";
 import { StateValuesPanel } from "./state-values-panel";
 import { generateChatCompletion, generateOfflineChatCompletion, flattenCompletionResult, ChatEngineError } from "@/lib/chat-engine";
+import { isPostofficeMode, sendPostofficeMessage, startPostofficePolling } from "@/lib/postoffice-mode";
 import { formatOfflineTurnXml as formatOfflineTurnXmlShared, buildOfflinePromptHistory as buildOfflinePromptHistoryShared } from "@/lib/offline-prompt-builder";
 import { getStatusRegionConfig, isCustomStatusRegionActive } from "@/lib/chat-status-region";
 import { CustomStatusFrame } from "@/components/chat/custom-status-frame";
@@ -1127,6 +1128,19 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
     useEffect(() => {
         emitChatPluginEvent("session.opened", { sessionId: session.id, isGroup: !!session.isGroup });
     }, [session.id, session.isGroup]);
+
+    useEffect(() => {
+        if (!isPostofficeMode()) return;
+        const stop = startPostofficePolling({
+            onNewMessages: (msgs) => {
+                for (const msg of msgs) {
+                    const chatMsg = pushChatMessage({ sessionId: session.id, role: "assistant", content: msg.content });
+                    setMessages(prev => [...prev, chatMsg]);
+                }
+            },
+        });
+        return stop;
+    }, [session.id]);
 
     // 聊天插件：监听插件 toast（支持常驻加载态 + 手动关闭）
     const chatToastIdRef = useRef<string | null>(null);
@@ -3768,6 +3782,7 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                 });
                 setMessages(prev => [...prev, diceAside]);
             }
+            if (isPostofficeMode()) { sendPostofficeMessage(currentText); return; }
             setPendingGenerate(true);
         };
 
