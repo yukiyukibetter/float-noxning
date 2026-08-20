@@ -1,2 +1,0 @@
-# Write access test
-This file can be deleted.
