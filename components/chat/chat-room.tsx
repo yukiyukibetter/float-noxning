@@ -1131,13 +1131,18 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
 
     useEffect(() => {
         if (!isPostofficeMode()) return;
-        const handler = (e: Event) => {
-            const msgs = (e as CustomEvent).detail?.messages;
-            if (!msgs?.length) return;
+        const processMessages = (msgs: any[]) => {
             for (const msg of msgs) {
                 const chatMsg = pushChatMessage({ sessionId: session.id, role: "assistant", content: msg.content });
                 setMessages(prev => [...prev, chatMsg]);
             }
+        };
+        fetch("/api/float-chat").then(r => r.json()).then(d => {
+            if (d.messages?.length > 0) processMessages(d.messages);
+        }).catch(() => {});
+        const handler = (e: Event) => {
+            const msgs = (e as CustomEvent).detail?.messages;
+            if (msgs?.length) processMessages(msgs);
         };
         window.addEventListener("postoffice-new-messages", handler);
         return () => window.removeEventListener("postoffice-new-messages", handler);
