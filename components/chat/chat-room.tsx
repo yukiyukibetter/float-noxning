@@ -14,7 +14,7 @@ import { EmojiPanel, StickerPanel } from "./emoji-panel";
 import { StickerSearchSuggest } from "./sticker-search-suggest";
 import { StateValuesPanel } from "./state-values-panel";
 import { generateChatCompletion, generateOfflineChatCompletion, flattenCompletionResult, ChatEngineError } from "@/lib/chat-engine";
-import { isPostofficeMode, sendPostofficeMessage, startPostofficePolling } from "@/lib/postoffice-mode";
+import { isPostofficeMode, sendPostofficeMessage, POSTOFFICE_EVENT } from "@/lib/postoffice-mode";
 import { formatOfflineTurnXml as formatOfflineTurnXmlShared, buildOfflinePromptHistory as buildOfflinePromptHistoryShared } from "@/lib/offline-prompt-builder";
 import { getStatusRegionConfig, isCustomStatusRegionActive } from "@/lib/chat-status-region";
 import { CustomStatusFrame } from "@/components/chat/custom-status-frame";
@@ -1131,15 +1131,16 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
 
     useEffect(() => {
         if (!isPostofficeMode()) return;
-        const stop = startPostofficePolling({
-            onNewMessages: (msgs) => {
-                for (const msg of msgs) {
-                    const chatMsg = pushChatMessage({ sessionId: session.id, role: "assistant", content: msg.content });
-                    setMessages(prev => [...prev, chatMsg]);
-                }
-            },
-        });
-        return stop;
+        const handler = (e: Event) => {
+            const msgs = (e as CustomEvent).detail?.messages;
+            if (!msgs?.length) return;
+            for (const msg of msgs) {
+                const chatMsg = pushChatMessage({ sessionId: session.id, role: "assistant", content: msg.content });
+                setMessages(prev => [...prev, chatMsg]);
+            }
+        };
+        window.addEventListener("postoffice-new-messages", handler);
+        return () => window.removeEventListener("postoffice-new-messages", handler);
     }, [session.id]);
 
     // 聊天插件：监听插件 toast（支持常驻加载态 + 手动关闭）
