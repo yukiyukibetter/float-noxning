@@ -1,19 +1,16 @@
 // lib/postoffice-mode.ts
 // Float · Nox♡Ning Edition — 邮局模式
-// 提供消息发送、轮询、模式检测
+// 全局轮询 + 事件广播，不依赖 React 生命周期
 
-// ── 模式检测 ──
-// Nox♡Ning Edition 默认启用邮局模式
-// 可通过 localStorage 覆盖（调试用）
+export const POSTOFFICE_EVENT = "postoffice-new-messages";
+
 export function isPostofficeMode(): boolean {
     if (typeof window === "undefined") return false;
     const override = localStorage.getItem("float-postoffice-mode");
     if (override === "false") return false;
-    if (override === "true") return true;
-    return true; // Nox♡Ning Edition 默认启用
+    return true;
 }
 
-// ── 发送消息 ──
 export async function sendPostofficeMessage(content: string): Promise<boolean> {
     try {
         const res = await fetch("/api/float-chat", {
@@ -27,50 +24,36 @@ export async function sendPostofficeMessage(content: string): Promise<boolean> {
     }
 }
 
-// ── 轮询服务 ──
-export type PostofficeMessage = {
-    id: string;
-    sender: string;
-    content: string;
-    created_at: string;
-};
+// ── 全局轮询（module 级别自启动）──
+let _started = false;
 
-export type PostofficePollingCallbacks = {
-    onNewMessages: (messages: PostofficeMessage[]) => void;
-    onError?: (error: Error) => void;
-};
-
-const POLL_INTERVAL = 3000; // 3秒
-
-export function startPostofficePolling(
-    callbacks: PostofficePollingCallbacks,
-): () => void {
-    let active = true;
-    let timer: ReturnType<typeof setTimeout> | null = null;
+function _startGlobalPolling(): void {
+    if (_started) return;
+    _started = true;
+    console.log("[Postoffice] Global polling started");
 
     const poll = async () => {
-        if (!active) return;
         try {
             const res = await fetch("/api/float-chat");
-            if (!res.ok) throw new Error(`Poll failed: ${res.status}`);
+            if (!res.ok) return;
             const data = await res.json();
             if (data.messages?.length > 0) {
-                callbacks.onNewMessages(data.messages);
+                console.log("[Postoffice] New messages:", data.messages.length);
+                window.dispatchEvent(
+                    new CustomEvent(POSTOFFICE_EVENT, { detail: { messages: data.messages } }),
+                );
             }
         } catch (err) {
-            callbacks.onError?.(err instanceof Error ? err : new Error(String(err)));
-        }
-        if (active) {
-            timer = setTimeout(poll, POLL_INTERVAL);
+            console.warn("[Postoffice] Poll error:", err);
         }
     };
 
-    // 首次延迟 1 秒后开始，避免页面加载时的请求拥堵
-    timer = setTimeout(poll, 1000);
+    // 首次 1 秒后开始，之后每 3 秒
+    setTimeout(poll, 1000);
+    setInterval(poll, 3000);
+}
 
-    // 返回清理函数
-    return () => {
-        active = false;
-        if (timer) clearTimeout(timer);
-    };
+// 浏览器环境下自动启动
+if (typeof window !== "undefined" && isPostofficeMode()) {
+    _startGlobalPolling();
 }
