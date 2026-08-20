@@ -5,8 +5,8 @@
 
 import { NextRequest, NextResponse } from "next/server";
 
-const SUPABASE_URL = process.env.SUPABASE_URL || "";
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || "";
+const SUPABASE_URL = process.env.SUPABASE_URL || "https://qaefaadqtqndchmgtgat.supabase.co";
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFhZWZhYWRxdHFuZGNobWd0Z2F0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMzMjM2NzEsImV4cCI6MjA4ODg5OTY3MX0.LFCLgMioMb7Je5yVyVLoEfdctzqJrNTfu0vnvfr5Fa4";
 
 function supabaseHeaders(): Record<string, string> {
     return {
@@ -24,9 +24,6 @@ function supabaseRest(path: string): string {
 // POST: 发送消息
 export async function POST(req: NextRequest) {
     try {
-        if (!SUPABASE_URL || !SUPABASE_KEY) {
-            return NextResponse.json({ error: "Supabase not configured" }, { status: 500 });
-        }
         const body = await req.json();
         const content = typeof body.content === "string" ? body.content.trim() : "";
         if (!content) {
@@ -52,9 +49,6 @@ export async function POST(req: NextRequest) {
 // GET: 拉取新消息（sender='nox', is_read=false）
 export async function GET() {
     try {
-        if (!SUPABASE_URL || !SUPABASE_KEY) {
-            return NextResponse.json({ error: "Supabase not configured" }, { status: 500 });
-        }
         // 查询未读消息
         const query = "float_messages?sender=eq.nox&is_read=eq.false&order=created_at.asc";
         const res = await fetch(supabaseRest(query), {
