@@ -14,7 +14,7 @@ import { EmojiPanel, StickerPanel } from "./emoji-panel";
 import { StickerSearchSuggest } from "./sticker-search-suggest";
 import { StateValuesPanel } from "./state-values-panel";
 import { generateChatCompletion, generateOfflineChatCompletion, flattenCompletionResult, ChatEngineError } from "@/lib/chat-engine";
-import { isPostofficeMode, sendPostofficeMessage, POSTOFFICE_EVENT } from "@/lib/postoffice-mode";
+import { isPostofficeMode, sendPostofficeMessage, POSTOFFICE_EVENT, drainPendingMessages } from "@/lib/postoffice-mode";
 import { formatOfflineTurnXml as formatOfflineTurnXmlShared, buildOfflinePromptHistory as buildOfflinePromptHistoryShared } from "@/lib/offline-prompt-builder";
 import { getStatusRegionConfig, isCustomStatusRegionActive } from "@/lib/chat-status-region";
 import { CustomStatusFrame } from "@/components/chat/custom-status-frame";
@@ -1137,9 +1137,8 @@ export function ChatRoom({ session, onBack }: ChatRoomProps) {
                 setMessages(prev => [...prev, chatMsg]);
             }
         };
-        fetch("/api/float-chat").then(r => r.json()).then(d => {
-            if (d.messages?.length > 0) processMessages(d.messages);
-        }).catch(() => {});
+        const cached = drainPendingMessages();
+        if (cached.length > 0) processMessages(cached);
         const handler = (e: Event) => {
             const msgs = (e as CustomEvent).detail?.messages;
             if (msgs?.length) processMessages(msgs);
