@@ -1,8 +1,7 @@
 // app/api/float-chat/route.ts
 // Float · Nox♡Ning Edition — 邮局消息中转站
 // POST: 凝凝发消息 → 写入 float_messages (sender='ning')
-// GET:  拉取澈澈的回复 → 读取最近50条 float_messages (sender='nox')，不过滤已读状态
-//       每个设备用自己的 localStorage 去重，不再互相抢消息
+// GET:  拉取最近100条所有消息（nox+ning），客户端localStorage去重
 
 import { NextRequest, NextResponse } from "next/server";
 
@@ -22,7 +21,6 @@ function supabaseRest(path: string): string {
     return `${SUPABASE_URL.replace(/\/$/, "")}/rest/v1/${path}`;
 }
 
-// POST: 发送消息
 export async function POST(req: NextRequest) {
     try {
         const body = await req.json();
@@ -47,10 +45,10 @@ export async function POST(req: NextRequest) {
     }
 }
 
-// GET: 拉取最近50条澈澈的消息（不过滤已读，每个设备自己用localStorage去重）
+// GET: 拉取最近100条所有消息（nox+ning），客户端自行去重
 export async function GET() {
     try {
-        const query = "float_messages?sender=eq.nox&order=created_at.desc&limit=50";
+        const query = "float_messages?order=created_at.desc&limit=100";
         const res = await fetch(supabaseRest(query), {
             method: "GET",
             headers: { ...supabaseHeaders(), Prefer: "" },
