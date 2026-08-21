@@ -1,10 +1,6 @@
 // lib/postoffice-mode.ts
-// Float · Nox♡Ning Edition — 邮局模式 v6.5
-// v6.4 → v6.5: CSS 加 [role="alert"] 隐藏 Float 的顶部 toast 横幅
-// v6.3 → v6.4: 砍掉致命的 _suppressErrorToasts MutationObserver（白屏元凶）
-// v6.2 → v6.3: _injectSuppressorCSS 注入 CSS 隐藏错误气泡
-// v6.1 → v6.2: _patchURLConstructor 拦截 new URL() 错误
-// v6.0 → v6.1: P0 消息排序 / P1 llm-sink 拦截 / P4 localStorage 去重
+// Float · Nox♡Ning Edition — 邮局模式 v6.6
+// v6.5 → v6.6: 加 _killErrorText 用安全 setInterval 扫描并隐藏 "失败" toast（不管它用什么 class/role）
 
 export const POSTOFFICE_EVENT = "postoffice-new-messages";
 const LS_KEY = "float-postoffice-messages";
@@ -69,7 +65,6 @@ async function _markAsRead(ids: number[]): Promise<void> {
     try { await fetch("/api/float-chat", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) }); } catch {}
 }
 
-// ─── DOM 注入 ───
 function _injectBubble(container: HTMLElement, content: string, msgId: number, timestamp: string): void {
     if (container.querySelector(`[data-postoffice-id="${msgId}"]`)) return;
     const w = document.createElement("div");
@@ -95,7 +90,6 @@ function _extractUserBubbleText(el: HTMLElement): string {
     return ((b || el).textContent?.trim() || "").slice(0, 100);
 }
 
-// ─── 核心同步 ───
 function _syncBubblesToDOM(): void {
     const c = document.querySelector(".page-body.chat-scroll-anchored") as HTMLElement | null;
     if (!c) return;
@@ -176,7 +170,6 @@ function _patchURLConstructor(): void {
     console.log("[Postoffice] ✔ URL patched");
 }
 
-// ─── CSS 注入（v6.5: 加 [role="alert"] 干掉顶部 toast） ───
 function _injectSuppressorCSS(): void {
     const s = document.createElement("style"); s.id = "postoffice-suppressor";
     s.textContent = `
@@ -185,7 +178,29 @@ function _injectSuppressorCSS(): void {
         .chat-toast-bar, .chat-error-bar, [class*="toast"][class*="error"], [class*="toast"][class*="fail"] { display: none !important; }
     `;
     document.head.appendChild(s);
-    console.log("[Postoffice] ✔ CSS injected (with alert suppression)");
+    console.log("[Postoffice] ✔ CSS injected");
+}
+
+// ─── v6.6 核心：不管 toast 用什么 class/role，按文本内容找到并杀掉 ───
+function _killErrorText(): void {
+    setInterval(() => {
+        // 浅层扫描 body 前 4 层（toast 通常在顶层），不用 TreeWalker 避免性能问题
+        const scan = (el: Element, depth: number) => {
+            if (depth > 4) return;
+            for (const child of Array.from(el.children)) {
+                const h = child as HTMLElement;
+                const t = h.textContent || "";
+                // 只匹配短文本（toast/banner 文本通常 < 40 字）
+                if (t.length > 0 && t.length < 40 && t.includes("生成失败")) {
+                    h.style.cssText += ";visibility:hidden!important;opacity:0!important;pointer-events:none!important;";
+                    return; // 找到一个就够了
+                }
+                scan(child, depth + 1);
+            }
+        };
+        scan(document.body, 0);
+    }, 500);
+    console.log("[Postoffice] ✔ Error text killer active");
 }
 
 function _patchFetch(): void {
@@ -207,6 +222,7 @@ if (typeof window !== "undefined" && isPostofficeMode()) {
     _patchURLConstructor();
     _startGlobalPolling();
     _patchFetch();
+    _killErrorText();         // v6.6: 安全的 setInterval 按文本杀 toast
     _watchDOMForUserMessages();
     _startDOMWatcher();
 }
