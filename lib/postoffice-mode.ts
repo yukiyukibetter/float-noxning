@@ -1,5 +1,5 @@
-// lib/postoffice-mode.ts — v6.9
-// v6.8 → v6.9: 动态头像（从 IndexedDB AiPhoneKvDB 读取 character avatar）+ 扩展错误文本隐藏
+// lib/postoffice-mode.ts — v7.0
+// v6.9 → v7.0: 去掉已读标记，改为客户端 localStorage 去重。多设备不再互相抢消息。
 
 export const POSTOFFICE_EVENT = "postoffice-new-messages";
 const LS_KEY = "float-postoffice-messages";
@@ -10,7 +10,7 @@ interface StoredMessage { id: number; content: string; timestamp: string; }
 interface SentRecord { text: string; ts: number; }
 
 function _getStoredMessages(): StoredMessage[] { try { const r = localStorage.getItem(LS_KEY); const m: StoredMessage[] = r ? JSON.parse(r) : []; m.sort((a,b) => (a.timestamp||"").localeCompare(b.timestamp||"")); return m; } catch { return []; } }
-function _storeMessage(msg: StoredMessage): void { const m = _getStoredMessages(); if (m.some(x => x.id === msg.id)) return; m.push(msg); while (m.length > 100) m.shift(); localStorage.setItem(LS_KEY, JSON.stringify(m)); }
+function _storeMessage(msg: StoredMessage): boolean { const m = _getStoredMessages(); if (m.some(x => x.id === msg.id)) return false; m.push(msg); while (m.length > 200) m.shift(); localStorage.setItem(LS_KEY, JSON.stringify(m)); return true; }
 function _getSentRecords(): SentRecord[] { try { const r = localStorage.getItem(LS_SENT_KEY); return (r ? JSON.parse(r) as SentRecord[] : []).filter(x => x.ts > Date.now() - 3600000); } catch { return []; } }
 function _isAlreadySent(t: string): boolean { return _getSentRecords().some(r => r.text === t); }
 function _markAsSentText(t: string): void { try { const r = _getSentRecords(); r.push({ text: t, ts: Date.now() }); while (r.length > 80) r.shift(); localStorage.setItem(LS_SENT_KEY, JSON.stringify(r)); } catch {} }
@@ -19,9 +19,8 @@ function _setUserTimestamp(k: string, ts: string): void { try { const m = _getUs
 
 export function isPostofficeMode(): boolean { return typeof window !== "undefined" && localStorage.getItem("float-postoffice-mode") !== "false"; }
 export async function sendPostofficeMessage(content: string): Promise<boolean> { try { return (await fetch("/api/float-chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }) })).ok; } catch { return false; } }
-async function _markAsRead(ids: number[]): Promise<void> { try { await fetch("/api/float-chat", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) }); } catch {} }
 
-// ─── v6.9: 动态头像系统 ───
+// ——— v7.0: 动态头像系统 ———
 let _avatarSrc = "/mascot.png";
 
 async function _loadAvatarFromDB(): Promise<void> {
@@ -44,7 +43,6 @@ async function _loadAvatarFromDB(): Promise<void> {
             if (Array.isArray(chars) && chars.length > 0 && chars[0]?.avatar) {
                 _avatarSrc = chars[0].avatar;
                 console.log("[Postoffice] ✔ Avatar loaded from DB", _avatarSrc.slice(0, 40) + "...");
-                // 更新所有已注入的邮局气泡头像
                 document.querySelectorAll('[data-postoffice-id] .chat-msg-avatar img').forEach(img => {
                     (img as HTMLImageElement).src = _avatarSrc;
                 });
@@ -82,11 +80,30 @@ function _syncBubblesToDOM(): void {
     c.querySelectorAll('[data-role="assistant"]').forEach(el => { const h = el as HTMLElement; if (!h.id?.startsWith("message-postoffice-")) h.style.display = "none"; });
 }
 function _startDOMWatcher(): void { _syncBubblesToDOM(); new MutationObserver(() => { requestAnimationFrame(() => { _syncBubblesToDOM(); }); }).observe(document.body, { childList: true, subtree: true }); setInterval(_syncBubblesToDOM, 2000); }
+
+// ——— v7.0: 轮询改为客户端去重，不标记已读 ———
 function _startGlobalPolling(): void {
     if (window.__postoffice_started) return; window.__postoffice_started = true;
-    const poll = async () => { try { const r = await fetch("/api/float-chat"); if (!r.ok) return; const d = await r.json(); if (d.messages?.length > 0) { const ids: number[] = []; for (const m of d.messages) { _storeMessage({ id: m.id, content: m.content, timestamp: m.created_at }); ids.push(m.id); } _markAsRead(ids); _syncBubblesToDOM(); window.dispatchEvent(new CustomEvent(POSTOFFICE_EVENT, { detail: { messages: d.messages } })); } } catch {} };
+    const poll = async () => {
+        try {
+            const r = await fetch("/api/float-chat"); if (!r.ok) return;
+            const d = await r.json();
+            if (d.messages?.length > 0) {
+                const newMsgs: any[] = [];
+                for (const m of d.messages) {
+                    const isNew = _storeMessage({ id: m.id, content: m.content, timestamp: m.created_at });
+                    if (isNew) newMsgs.push(m);
+                }
+                if (newMsgs.length > 0) {
+                    _syncBubblesToDOM();
+                    window.dispatchEvent(new CustomEvent(POSTOFFICE_EVENT, { detail: { messages: newMsgs } }));
+                }
+            }
+        } catch {}
+    };
     setTimeout(poll, 1500); setInterval(poll, 3000);
 }
+
 function _watchDOMForUserMessages(): void {
     new MutationObserver((muts) => { for (const mut of muts) for (const n of Array.from(mut.addedNodes)) {
         if (!(n instanceof HTMLElement) || n.id?.startsWith("message-postoffice-")) continue;
@@ -119,7 +136,6 @@ function _patchFetch(): void {
     } as typeof window.fetch;
 }
 
-// ─── v6.8+: 暴力杀 toast（v6.9 扩展：也杀 "出错了" 文本） ───
 function _killErrorText(): void {
     const killed = new WeakSet<HTMLElement>();
     const ERROR_PATTERNS = ["生成失败", "出错了", "请先在设置", "绑定配置", "设置 API"];
@@ -159,5 +175,5 @@ if (typeof window !== "undefined" && isPostofficeMode()) {
     _watchDOMForUserMessages();
     _startDOMWatcher();
     _loadAvatarFromDB();
-    console.log("[Postoffice] ✔ v6.9 initialized");
+    console.log("[Postoffice] ✔ v7.0 initialized");
 }
