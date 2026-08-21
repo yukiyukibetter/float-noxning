@@ -1,15 +1,10 @@
 // lib/postoffice-mode.ts
-// Float · Nox♡Ning Edition — 邮局模式 v6.3
-// v6.2 → v6.3 改动：
-//   P1 核弹: _injectSuppressorCSS 注入 CSS 立即隐藏所有非邮局 assistant 气泡
-//   P1 核弹: _suppressErrorToasts 改用文本匹配（不依赖 role="alert"，Float 不用这个属性）
-// v6.1 → v6.2:
-//   _patchURLConstructor 拦截 new URL() 错误
-//   → 不需要配任何 API 设置，postoffice 模式完全自治
-// v6.0 → v6.1 改动：
-//   P0: 消息按 timestamp 排序 + insertBefore 正确位置
-//   P1: _patchFetch 增加 llm-sink 拦截
-//   P4: 发送方向用 localStorage 持久化去重
+// Float · Nox♡Ning Edition — 邮局模式 v6.4
+// v6.3 → v6.4: 砍掉 _suppressErrorToasts（MutationObserver + TreeWalker + style 修改 = 无限循环 → 白屏）
+//   CSS 注入已经够用了，toast 用 setInterval 安全地处理
+// v6.2 → v6.3: _injectSuppressorCSS 注入 CSS 隐藏错误气泡
+// v6.1 → v6.2: _patchURLConstructor 拦截 new URL() 错误
+// v6.0 → v6.1: P0 消息排序 / P1 llm-sink 拦截 / P4 localStorage 去重
 
 export const POSTOFFICE_EVENT = "postoffice-new-messages";
 
@@ -56,8 +51,7 @@ function _getSentRecords(): SentRecord[] {
     try {
         const raw = localStorage.getItem(LS_SENT_KEY);
         const records: SentRecord[] = raw ? JSON.parse(raw) : [];
-        const cutoff = Date.now() - 3600000;
-        return records.filter(r => r.ts > cutoff);
+        return records.filter(r => r.ts > Date.now() - 3600000);
     } catch { return []; }
 }
 
@@ -333,10 +327,11 @@ function _injectSuppressorCSS(): void {
     const style = document.createElement("style");
     style.id = "postoffice-suppressor";
     style.textContent = `
-        /* v6.3: CSS 核弹——立即隐藏所有 LLM 层产生的垃圾 */
+        /* 隐藏所有非邮局的 assistant 气泡 */
         .chat-msg-wrapper[data-role="assistant"]:not([data-postoffice-id]) {
             display: none !important;
         }
+        /* 隐藏 Float 错误相关的 toast/banner */
         .chat-toast-bar, .chat-error-bar,
         [class*="toast"][class*="error"],
         [class*="toast"][class*="fail"] {
@@ -347,34 +342,19 @@ function _injectSuppressorCSS(): void {
     console.log("[Postoffice] ✔ Suppressor CSS injected");
 }
 
-// ─── 错误文本匹配隐藏 ───
+// ─── 安全的 toast 隐藏（v6.4: 用 setInterval 代替 MutationObserver 避免无限循环） ───
 
-function _suppressErrorToasts(): void {
-    const observer = new MutationObserver(() => {
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
-        let node: Node | null;
-        while (node = walker.nextNode()) {
-            const el = node as HTMLElement;
-            const text = el.textContent || "";
-            if (text.length > 200) continue;
-            if (text.includes("生成失败") || (text.includes("出错了") && text.includes("设置"))) {
-                let target = el;
-                for (let i = 0; i < 4; i++) {
-                    if (target.parentElement && target.parentElement.tagName !== "BODY") {
-                        const cls = target.parentElement.className || "";
-                        if (cls.includes("chat-msg") || cls.includes("toast") || cls.includes("snack") || cls.includes("banner")) {
-                            target = target.parentElement;
-                            break;
-                        }
-                        target = target.parentElement;
-                    }
-                }
-                target.style.display = "none";
+function _suppressErrorToastsSafe(): void {
+    setInterval(() => {
+        // 只查找小元素，避免误杀大容器
+        document.querySelectorAll('[class*="toast"], [class*="banner"], [class*="snackbar"]').forEach((el) => {
+            const text = (el as HTMLElement).textContent || "";
+            if (text.includes("生成失败") || text.includes("出错了")) {
+                (el as HTMLElement).style.display = "none";
             }
-        }
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-    console.log("[Postoffice] ✔ Error suppressor active");
+        });
+    }, 1000);
+    console.log("[Postoffice] ✔ Toast suppressor active (safe interval)");
 }
 
 // ─── fetch patch ───
@@ -412,11 +392,11 @@ function _patchFetch(): void {
 // ─── 初始化 ───
 
 if (typeof window !== "undefined" && isPostofficeMode()) {
-    _injectSuppressorCSS();   // v6.3: 最先注入，CSS 立即生效
-    _patchURLConstructor();
+    _injectSuppressorCSS();        // CSS 立即生效
+    _patchURLConstructor();         // 拦截 new URL() 错误
     _startGlobalPolling();
     _patchFetch();
-    _suppressErrorToasts();
+    _suppressErrorToastsSafe();     // v6.4: 安全的 setInterval 替代致命的 MutationObserver
     _watchDOMForUserMessages();
     _startDOMWatcher();
 }
