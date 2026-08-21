@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 const SB = "https://qaefaadqtqndchmgtgat.supabase.co";
 const SK = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFhZWZhYWRxdHFuZGNobWd0Z2F0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMzMjM2NzEsImV4cCI6MjA4ODg5OTY3MX0.LFCLgMioMb7Je5yVyVLoEfdctzqJrNTfu0vnvfr5Fa4";
-const H = { "Content-Type": "application/json", apikey: SK, Authorization: `Bearer ${SK}` };
+const H:{[k:string]:string} = { "Content-Type": "application/json", apikey: SK, Authorization: `Bearer ${SK}` };
 const api = (p: string) => `${SB}/rest/v1/${p}`;
 interface M { id: number; sender: string; content: string; created_at: string; }
 
@@ -139,22 +139,18 @@ export default function Chat() {
         <span className="page-title" style={{fontSize:16,fontWeight:600,color:"var(--c-text-title,#000)"}}>⚙ 设置</span>
       </div>
       <div style={{flex:1,overflow:"auto",padding:16,display:"flex",flexDirection:"column",gap:14}}>
-        {/* 名字 */}
         <div>
           <label style={{fontSize:13,fontWeight:600,marginBottom:4,display:"block",color:"var(--c-text-title,#333)"}}>澈澈的名字</label>
           <input value={name} onChange={e=>setName(e.target.value)} placeholder="澈澈♡"
             style={{width:"100%",padding:"10px 14px",borderRadius:12,border:"1px solid rgba(0,0,0,0.12)",fontSize:15,boxSizing:"border-box",background:"var(--c-input,#f0f0f0)",color:"var(--c-text,#333)"}} />
         </div>
-        {/* 头像 */}
         {avatarPreview("nox", avNox, "澈澈的头像")}
         {avatarPreview("ning", avNing, "凝凝的头像")}
-        {/* 背景 */}
         <div>
           <label style={{fontSize:13,fontWeight:600,marginBottom:4,display:"block",color:"var(--c-text-title,#333)"}}>聊天背景图 URL</label>
           <input value={wall} onChange={e=>setWall(e.target.value)} placeholder="图片URL或留空"
             style={{width:"100%",padding:"10px 14px",borderRadius:12,border:"1px solid rgba(0,0,0,0.12)",fontSize:15,boxSizing:"border-box",background:"var(--c-input,#f0f0f0)",color:"var(--c-text,#333)"}} />
         </div>
-        {/* CSS主题 */}
         <div>
           <label style={{fontSize:13,fontWeight:600,marginBottom:4,display:"block",color:"var(--c-text-title,#333)"}}>自定义 CSS 主题</label>
           <p style={{fontSize:12,color:"#999",margin:"0 0 6px"}}>粘贴 Float 社区 CSS 主题代码，class 名完全兼容 ✔</p>
@@ -173,8 +169,9 @@ export default function Chat() {
       <style>{css}</style>
       <style>{`
         .chat-app{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
-        .chat-msg-wrapper{display:flex!important;gap:8px;padding:4px 8px;align-items:flex-start}
-        .chat-msg-wrapper[data-role="user"]{flex-direction:row-reverse!important}
+        .chat-msg-wrapper{display:flex!important;gap:8px;padding:4px 8px;align-items:flex-start;width:100%!important;box-sizing:border-box!important}
+        .chat-msg-wrapper[data-role="user"]{justify-content:flex-end!important;flex-direction:row!important}
+        .chat-msg-wrapper[data-role="assistant"]{justify-content:flex-start!important;flex-direction:row!important}
         .chat-msg-content-wrap{max-width:75%;min-width:0}
         .chat-msg-avatar{width:36px;height:36px;border-radius:18px;overflow:hidden;flex-shrink:0;position:relative}
         .chat-msg-avatar img{width:100%;height:100%;object-fit:cover}
@@ -186,7 +183,7 @@ export default function Chat() {
         .chat-scroll-anchored{-webkit-overflow-scrolling:touch}
         .nn-date{text-align:center;padding:12px 0 4px;font-size:12px;color:#999}
         .nn-time{font-size:11px;color:#aaa;margin-top:2px;padding:0 4px}
-        .chat-msg-wrapper[data-role="user"] .nn-time{text-align:right}
+        .nn-time-right{text-align:right}
       `}</style>
 
       {/* Header */}
@@ -202,17 +199,33 @@ export default function Chat() {
       <div ref={ref} className="page-body chat-room-main-pane chat-scroll-anchored" style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:2,padding:"8px 0"}}>
         {msgs.map(m => {
           const dl = dateL(m.created_at), show = dl !== ld; if (show) ld = dl;
-          const nox = m.sender === "nox";
+          const isNox = m.sender === "nox";
           return <div key={m.id}>
             {show && <div className="nn-date">{dl}</div>}
-            <div className="chat-msg-wrapper" data-role={nox?"assistant":"user"}>
-              <div className="chat-msg-avatar">{nox ? noxAv(36) : ningAv(36)}</div>
-              <div className="chat-msg-content-wrap" style={{display:"flex",flexDirection:"column"}}>
-                <div className={nox?"chat-bubble-role-assistant chat-bubble-role-mascot":"chat-bubble-role-user"} data-ui={nox?"bubble-bot":"bubble-user"}>
-                  <div><div className="chat-markdown"><div className="chat-markdown-paragraph">{m.content}</div></div></div>
-                </div>
-                <div className="nn-time">{time(m.created_at)}</div>
-              </div>
+            <div className="chat-msg-wrapper" data-role={isNox?"assistant":"user"}>
+              {isNox ? (
+                /* 澈澈的消息：[头像] [气泡]  靠左 */
+                <>
+                  <div className="chat-msg-avatar">{noxAv(36)}</div>
+                  <div className="chat-msg-content-wrap" style={{display:"flex",flexDirection:"column"}}>
+                    <div className="chat-bubble-role-assistant chat-bubble-role-mascot" data-ui="bubble-bot">
+                      <div><div className="chat-markdown"><div className="chat-markdown-paragraph">{m.content}</div></div></div>
+                    </div>
+                    <div className="nn-time">{time(m.created_at)}</div>
+                  </div>
+                </>
+              ) : (
+                /* 凝凝的消息：[气泡] [头像]  靠右 */
+                <>
+                  <div className="chat-msg-content-wrap" style={{display:"flex",flexDirection:"column",alignItems:"flex-end"}}>
+                    <div className="chat-bubble-role-user" data-ui="bubble-user">
+                      <div><div className="chat-markdown"><div className="chat-markdown-paragraph">{m.content}</div></div></div>
+                    </div>
+                    <div className="nn-time nn-time-right">{time(m.created_at)}</div>
+                  </div>
+                  <div className="chat-msg-avatar">{ningAv(36)}</div>
+                </>
+              )}
             </div>
           </div>;
         })}
