@@ -1,9 +1,11 @@
 // lib/postoffice-mode.ts
-// Float · Nox♡Ning Edition — 邮局模式 v6.2
-// v6.1 → v6.2 改动：
-//   P1 加强: _patchURLConstructor 拦截 new URL() 错误（chat-engine 在 fetch 之前就炸的根源）
-//   P1 加强: _suppressErrorToasts 隐藏 "生成失败" toast
-//   → 现在不需要配任何 API 设置，postoffice 模式完全自治
+// Float · Nox♡Ning Edition — 邮局模式 v6.3
+// v6.2 → v6.3 改动：
+//   P1 核弹: _injectSuppressorCSS 注入 CSS 立即隐藏所有非邮局 assistant 气泡
+//   P1 核弹: _suppressErrorToasts 改用文本匹配（不依赖 role="alert"，Float 不用这个属性）
+// v6.1 → v6.2:
+//   _patchURLConstructor 拦截 new URL() 错误
+//   → 不需要配任何 API 设置，postoffice 模式完全自治
 // v6.0 → v6.1 改动：
 //   P0: 消息按 timestamp 排序 + insertBefore 正确位置
 //   P1: _patchFetch 增加 llm-sink 拦截
@@ -48,10 +50,7 @@ function _storeMessage(msg: StoredMessage): void {
 
 // ─── localStorage 持久化（发送去重 P4） ───
 
-interface SentRecord {
-    text: string;
-    ts: number;
-}
+interface SentRecord { text: string; ts: number; }
 
 function _getSentRecords(): SentRecord[] {
     try {
@@ -78,9 +77,7 @@ function _markAsSentText(text: string): void {
 // ─── localStorage 持久化（用户气泡时间戳 P0） ───
 
 function _getUserTimestamps(): Record<string, string> {
-    try {
-        return JSON.parse(localStorage.getItem(LS_USER_TS_KEY) || "{}");
-    } catch { return {}; }
+    try { return JSON.parse(localStorage.getItem(LS_USER_TS_KEY) || "{}"); } catch { return {}; }
 }
 
 function _setUserTimestamp(key: string, ts: string): void {
@@ -122,13 +119,10 @@ async function _markAsRead(ids: number[]): Promise<void> {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ ids }),
         });
-        console.log("[Postoffice] Marked as read:", ids);
-    } catch (err) {
-        console.warn("[Postoffice] Mark-read failed:", err);
-    }
+    } catch {}
 }
 
-// ─── DOM 注入（P0: 按时间戳插入正确位置） ───
+// ─── DOM 注入 ───
 
 function _injectBubble(container: HTMLElement, content: string, msgId: number, timestamp: string): void {
     if (container.querySelector(`[data-postoffice-id="${msgId}"]`)) return;
@@ -169,22 +163,15 @@ function _injectBubble(container: HTMLElement, content: string, msgId: number, t
     let insertTarget: Element | null = null;
     for (const child of children) {
         const childTs = (child as HTMLElement).getAttribute("data-postoffice-ts");
-        if (childTs && childTs > timestamp) {
-            insertTarget = child;
-            break;
-        }
+        if (childTs && childTs > timestamp) { insertTarget = child; break; }
     }
-
-    if (insertTarget) {
-        container.insertBefore(wrapper, insertTarget);
-    } else {
-        container.appendChild(wrapper);
-    }
+    if (insertTarget) { container.insertBefore(wrapper, insertTarget); }
+    else { container.appendChild(wrapper); }
 
     console.log("[Postoffice] ✔ Injected bubble #" + msgId + ":", content.slice(0, 40));
 }
 
-// ─── 核心：同步所有邮局消息到 DOM ───
+// ─── 核心同步 ───
 
 function _syncBubblesToDOM(): void {
     const container = document.querySelector(".page-body.chat-scroll-anchored") as HTMLElement | null;
@@ -214,11 +201,10 @@ function _syncBubblesToDOM(): void {
     }
 
     if (injectedAny) {
-        requestAnimationFrame(() => {
-            container.scrollTop = container.scrollHeight;
-        });
+        requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
     }
 
+    // JS fallback: 也用 JS 隐藏（配合 CSS 双保险）
     const allAssistant = container.querySelectorAll('[data-role="assistant"]');
     for (const el of Array.from(allAssistant)) {
         const htmlEl = el as HTMLElement;
@@ -238,15 +224,11 @@ function _extractUserBubbleText(el: HTMLElement): string {
 
 function _startDOMWatcher(): void {
     _syncBubblesToDOM();
-
     const observer = new MutationObserver(() => {
-        requestAnimationFrame(() => {
-            _syncBubblesToDOM();
-        });
+        requestAnimationFrame(() => { _syncBubblesToDOM(); });
     });
     observer.observe(document.body, { childList: true, subtree: true });
-    console.log("[Postoffice] ✔ DOM watcher active (sync on every mutation)");
-
+    console.log("[Postoffice] ✔ DOM watcher active");
     setInterval(_syncBubblesToDOM, 2000);
 }
 
@@ -263,7 +245,6 @@ function _startGlobalPolling(): void {
             if (!res.ok) return;
             const data = await res.json();
             if (data.messages?.length > 0) {
-                console.log("[Postoffice] New messages:", data.messages.length);
                 const ids: number[] = [];
                 for (const msg of data.messages) {
                     _storeMessage({ id: msg.id, content: msg.content, timestamp: msg.created_at });
@@ -271,20 +252,16 @@ function _startGlobalPolling(): void {
                 }
                 _markAsRead(ids);
                 _syncBubblesToDOM();
-                window.dispatchEvent(
-                    new CustomEvent(POSTOFFICE_EVENT, { detail: { messages: data.messages } }),
-                );
+                window.dispatchEvent(new CustomEvent(POSTOFFICE_EVENT, { detail: { messages: data.messages } }));
             }
-        } catch (err) {
-            console.warn("[Postoffice] Poll error:", err);
-        }
+        } catch {}
     };
 
     setTimeout(poll, 1500);
     setInterval(poll, 3000);
 }
 
-// ─── 发送方向（P4: localStorage 持久化去重） ───
+// ─── 发送方向 ───
 
 function _watchDOMForUserMessages(): void {
     const observer = new MutationObserver((mutations) => {
@@ -298,7 +275,6 @@ function _watchDOMForUserMessages(): void {
                 for (const msgEl of userMsgs) {
                     const htmlEl = msgEl as HTMLElement;
                     if (htmlEl.id?.startsWith("message-postoffice-")) continue;
-
                     if (htmlEl.getAttribute("data-postoffice-sent") === "1") continue;
 
                     const text = _extractUserBubbleText(htmlEl);
@@ -323,10 +299,10 @@ function _watchDOMForUserMessages(): void {
         }
     });
     observer.observe(document.body, { childList: true, subtree: true });
-    console.log("[Postoffice] ✔ Send watcher active (localStorage dedup)");
+    console.log("[Postoffice] ✔ Send watcher active");
 }
 
-// ─── URL 构造器补丁（P1 v6.2: 在 new URL() 爆炸前拦截） ───
+// ─── URL 构造器补丁 ───
 
 function _patchURLConstructor(): void {
     const OrigURL = globalThis.URL;
@@ -336,7 +312,7 @@ function _patchURLConstructor(): void {
             // @ts-ignore
             return new OrigURL(...args);
         } catch (_e) {
-            console.warn("[Postoffice] URL() failed, returning dummy →", String(args[0]).slice(0, 60));
+            console.warn("[Postoffice] URL() failed, returning dummy");
             return new OrigURL("https://postoffice-sink.local/v1/chat/completions");
         }
     }
@@ -347,25 +323,58 @@ function _patchURLConstructor(): void {
             try { (PatchedURL as any)[key] = (OrigURL as any)[key]; } catch {}
         }
     }
-
     (globalThis as any).URL = PatchedURL;
     console.log("[Postoffice] ✔ URL constructor patched");
 }
 
-// ─── 错误弹窗抑制（P1 v6.2） ───
+// ─── CSS 注入（v6.3 核心：立即隐藏所有 LLM 垃圾） ───
+
+function _injectSuppressorCSS(): void {
+    const style = document.createElement("style");
+    style.id = "postoffice-suppressor";
+    style.textContent = `
+        /* v6.3: CSS 核弹——立即隐藏所有 LLM 层产生的垃圾 */
+        .chat-msg-wrapper[data-role="assistant"]:not([data-postoffice-id]) {
+            display: none !important;
+        }
+        .chat-toast-bar, .chat-error-bar,
+        [class*="toast"][class*="error"],
+        [class*="toast"][class*="fail"] {
+            display: none !important;
+        }
+    `;
+    document.head.appendChild(style);
+    console.log("[Postoffice] ✔ Suppressor CSS injected");
+}
+
+// ─── 错误文本匹配隐藏 ───
 
 function _suppressErrorToasts(): void {
     const observer = new MutationObserver(() => {
-        const alerts = document.querySelectorAll('[role="alert"]');
-        for (const el of Array.from(alerts)) {
-            const text = (el as HTMLElement).textContent || "";
-            if (text.includes("生成失败") || text.includes("出错了") || text.includes("expected pattern")) {
-                (el as HTMLElement).style.display = "none";
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+        let node: Node | null;
+        while (node = walker.nextNode()) {
+            const el = node as HTMLElement;
+            const text = el.textContent || "";
+            if (text.length > 200) continue;
+            if (text.includes("生成失败") || (text.includes("出错了") && text.includes("设置"))) {
+                let target = el;
+                for (let i = 0; i < 4; i++) {
+                    if (target.parentElement && target.parentElement.tagName !== "BODY") {
+                        const cls = target.parentElement.className || "";
+                        if (cls.includes("chat-msg") || cls.includes("toast") || cls.includes("snack") || cls.includes("banner")) {
+                            target = target.parentElement;
+                            break;
+                        }
+                        target = target.parentElement;
+                    }
+                }
+                target.style.display = "none";
             }
         }
     });
     observer.observe(document.body, { childList: true, subtree: true });
-    console.log("[Postoffice] ✔ Error toast suppressor active");
+    console.log("[Postoffice] ✔ Error suppressor active");
 }
 
 // ─── fetch patch ───
@@ -397,13 +406,14 @@ function _patchFetch(): void {
         }
         return originalFetch(input, init);
     } as typeof window.fetch;
-    console.log("[Postoffice] ✔ fetch patched (with llm-sink + dummy intercept)");
+    console.log("[Postoffice] ✔ fetch patched");
 }
 
 // ─── 初始化 ───
 
 if (typeof window !== "undefined" && isPostofficeMode()) {
-    _patchURLConstructor();   // v6.2: 必须最先执行，拦截 new URL() 错误
+    _injectSuppressorCSS();   // v6.3: 最先注入，CSS 立即生效
+    _patchURLConstructor();
     _startGlobalPolling();
     _patchFetch();
     _suppressErrorToasts();
