@@ -1,5 +1,5 @@
-// lib/postoffice-mode.ts — v6.8
-// v6.7 → v6.8: _killErrorText 去掉 children.length 限制 + 搜索所有 tag + JS 隐藏 [role="alert"]
+// lib/postoffice-mode.ts — v6.9
+// v6.8 → v6.9: 动态头像（从 IndexedDB AiPhoneKvDB 读取 character avatar）+ 扩展错误文本隐藏
 
 export const POSTOFFICE_EVENT = "postoffice-new-messages";
 const LS_KEY = "float-postoffice-messages";
@@ -21,10 +21,46 @@ export function isPostofficeMode(): boolean { return typeof window !== "undefine
 export async function sendPostofficeMessage(content: string): Promise<boolean> { try { return (await fetch("/api/float-chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }) })).ok; } catch { return false; } }
 async function _markAsRead(ids: number[]): Promise<void> { try { await fetch("/api/float-chat", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) }); } catch {} }
 
+// ─── v6.9: 动态头像系统 ───
+let _avatarSrc = "/mascot.png";
+
+async function _loadAvatarFromDB(): Promise<void> {
+    try {
+        const db = await new Promise<IDBDatabase>((resolve, reject) => {
+            const req = indexedDB.open("AiPhoneKvDB");
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+        const tx = db.transaction("entries", "readonly");
+        const store = tx.objectStore("entries");
+        const result = await new Promise<any>((resolve, reject) => {
+            const req = store.get("ai_phone_characters_v1");
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+        db.close();
+        if (result?.value) {
+            const chars = JSON.parse(result.value);
+            if (Array.isArray(chars) && chars.length > 0 && chars[0]?.avatar) {
+                _avatarSrc = chars[0].avatar;
+                console.log("[Postoffice] ✔ Avatar loaded from DB", _avatarSrc.slice(0, 40) + "...");
+                // 更新所有已注入的邮局气泡头像
+                document.querySelectorAll('[data-postoffice-id] .chat-msg-avatar img').forEach(img => {
+                    (img as HTMLImageElement).src = _avatarSrc;
+                });
+            }
+        }
+    } catch (e) {
+        console.warn("[Postoffice] Avatar load failed, using default", e);
+    }
+}
+
 function _injectBubble(c: HTMLElement, content: string, msgId: number, timestamp: string): void {
     if (c.querySelector(`[data-postoffice-id="${msgId}"]`)) return;
     const w = document.createElement("div"); w.className = "chat-msg-wrapper"; w.setAttribute("data-role", "assistant"); w.setAttribute("data-postoffice-id", String(msgId)); w.setAttribute("data-postoffice-ts", timestamp); w.id = `message-postoffice-${msgId}`;
-    const av = document.createElement("div"); av.className = "chat-msg-avatar w-[40px] h-[40px] rounded-[20px] bg-white shrink-0 flex items-center justify-center overflow-hidden"; av.innerHTML = '<img class="w-full h-full object-contain p-[2px]" alt="澈澈" src="/mascot.png">';
+    const av = document.createElement("div"); av.className = "chat-msg-avatar w-[40px] h-[40px] rounded-[20px] bg-white shrink-0 flex items-center justify-center overflow-hidden";
+    const img = document.createElement("img"); img.className = "w-full h-full object-cover rounded-[20px]"; img.alt = "澈澈"; img.src = _avatarSrc;
+    av.appendChild(img);
     const cw = document.createElement("div"); cw.className = "chat-msg-content-wrap flex flex-col min-w-0 max-w-[70%]";
     const b = document.createElement("div"); b.className = "chat-bubble-role-assistant chat-bubble-role-mascot rounded-md break-words relative cursor-pointer select-none"; b.setAttribute("data-ui", "bubble-bot");
     const d = document.createElement("div"); const md = document.createElement("div"); md.className = "chat-markdown hide-scrollbar break-words"; const p = document.createElement("div"); p.className = "chat-markdown-paragraph"; p.textContent = content;
@@ -83,37 +119,36 @@ function _patchFetch(): void {
     } as typeof window.fetch;
 }
 
-// ─── v6.8: 暴力杀 toast（无限制搜索 + role="alert" JS 隐藏） ───
+// ─── v6.8+: 暴力杀 toast（v6.9 扩展：也杀 "出错了" 文本） ───
 function _killErrorText(): void {
     const killed = new WeakSet<HTMLElement>();
+    const ERROR_PATTERNS = ["生成失败", "出错了", "请先在设置", "绑定配置", "设置 API"];
     setInterval(() => {
-        // 1. JS 强制隐藏所有 role="alert" 元素（CSS 可能被覆盖）
         document.querySelectorAll("[role='alert']").forEach((el) => {
             (el as HTMLElement).style.cssText += ";display:none!important;height:0!important;overflow:hidden!important;";
         });
-        // 2. 搜索所有元素（不限 tag、不限 children 数量），找 "生成失败" 文本
         document.querySelectorAll("*").forEach((el) => {
             const h = el as HTMLElement;
             if (killed.has(h)) return;
             const t = h.textContent || "";
-            // 只匹配短文本元素（toast 文本 < 30 字）
-            if (t.length < 4 || t.length > 30) return;
-            if (!t.includes("生成失败")) return;
-            // 找到了！向上冒泡找只包含 toast 的容器
+            if (t.length < 3 || t.length > 60) return;
+            if (!ERROR_PATTERNS.some(p => t.includes(p))) return;
             let target = h;
             for (let i = 0; i < 5; i++) {
                 const parent = target.parentElement;
                 if (!parent || parent === document.body || parent.tagName === "MAIN") break;
                 const pt = parent.textContent || "";
-                if (pt.length < 50 && pt.includes("生成失败")) target = parent;
+                if (pt.length < 80 && ERROR_PATTERNS.some(p => pt.includes(p))) target = parent;
                 else break;
             }
             target.style.cssText += ";display:none!important;height:0!important;overflow:hidden!important;";
             killed.add(target);
-            console.log("[Postoffice] ✔ KILLED toast:", t.slice(0, 25));
+            console.log("[Postoffice] ✔ KILLED error text:", t.slice(0, 30));
         });
     }, 300);
 }
+
+export function drainPendingMessages(): any[] { return []; }
 
 if (typeof window !== "undefined" && isPostofficeMode()) {
     _injectSuppressorCSS();
@@ -123,5 +158,6 @@ if (typeof window !== "undefined" && isPostofficeMode()) {
     _killErrorText();
     _watchDOMForUserMessages();
     _startDOMWatcher();
-    console.log("[Postoffice] ✔ v6.8 initialized");
+    _loadAvatarFromDB();
+    console.log("[Postoffice] ✔ v6.9 initialized");
 }
