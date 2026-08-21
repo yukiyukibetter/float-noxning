@@ -27,6 +27,27 @@ const compressImg = (file: File, max = 200): Promise<string> =>
     reader.readAsDataURL(file);
   });
 
+/* ── 云端配置读写 ── */
+const cfgGet = async (): Promise<Record<string,string>> => {
+  try {
+    const r = await fetch(api("float_config?select=key,value"), { headers: H });
+    if (!r.ok) return {};
+    const rows: {key:string;value:string}[] = await r.json();
+    const m: Record<string,string> = {};
+    for (const {key,value} of rows) m[key] = value;
+    return m;
+  } catch { return {}; }
+};
+const cfgSet = async (key: string, value: string) => {
+  try {
+    await fetch(api("float_config"), {
+      method: "POST",
+      headers: { ...H, Prefer: "resolution=merge-duplicates" },
+      body: JSON.stringify({ key, value, updated_at: new Date().toISOString() })
+    });
+  } catch {}
+};
+
 export default function Chat() {
   const [msgs, setMsgs] = useState<M[]>([]);
   const [input, setInput] = useState("");
@@ -37,22 +58,34 @@ export default function Chat() {
   const [avNing, setAvNing] = useState("");
   const [wall, setWall] = useState("");
   const [name, setName] = useState("澈澈♡");
+  const [ready, setReady] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const ids = useRef(new Set<number>());
 
+  /* ── 初始化：云端优先，localStorage fallback ── */
   useEffect(() => {
-    try {
-      setCss(localStorage.getItem("nn-css") || "");
-      setAvNox(localStorage.getItem("nn-av-nox") || "");
-      setAvNing(localStorage.getItem("nn-av-ning") || "");
-      setWall(localStorage.getItem("nn-wall") || "");
-      setName(localStorage.getItem("nn-name") || "澈澈♡");
-    } catch {}
+    (async () => {
+      // 先读 localStorage 快速显示
+      try {
+        setCss(localStorage.getItem("nn-css") || "");
+        setAvNox(localStorage.getItem("nn-av-nox") || "");
+        setAvNing(localStorage.getItem("nn-av-ning") || "");
+        setWall(localStorage.getItem("nn-wall") || "");
+        setName(localStorage.getItem("nn-name") || "澈澈♡");
+      } catch {}
+      // 再读云端覆盖
+      const cfg = await cfgGet();
+      if (cfg.av_nox) { setAvNox(cfg.av_nox); try { localStorage.setItem("nn-av-nox", cfg.av_nox); } catch {} }
+      if (cfg.av_ning) { setAvNing(cfg.av_ning); try { localStorage.setItem("nn-av-ning", cfg.av_ning); } catch {} }
+      if (cfg.name) { setName(cfg.name); try { localStorage.setItem("nn-name", cfg.name); } catch {} }
+      if (cfg.wall) { setWall(cfg.wall); try { localStorage.setItem("nn-wall", cfg.wall); } catch {} }
+      setReady(true);
+    })();
   }, []);
 
-  /* ── 强制设置 flex 属性（绕过 Float 全局 CSS 的 !important） ── */
+  /* ── 强制 flex 属性（绕过 Float 全局 CSS） ── */
   useEffect(() => {
-    const obs = new MutationObserver(() => {
+    const fix = () => {
       document.querySelectorAll<HTMLElement>('.chat-msg-wrapper[data-role="user"]').forEach(el => {
         el.style.setProperty('flex-direction', 'row-reverse', 'important');
         el.style.setProperty('justify-content', 'flex-start', 'important');
@@ -61,11 +94,12 @@ export default function Chat() {
         el.style.setProperty('flex-direction', 'row', 'important');
         el.style.setProperty('justify-content', 'flex-start', 'important');
       });
-    });
+    };
+    const obs = new MutationObserver(fix);
     const container = ref.current;
-    if (container) obs.observe(container, { childList: true, subtree: true });
+    if (container) { obs.observe(container, { childList: true, subtree: true }); fix(); }
     return () => obs.disconnect();
-  }, []);
+  }, [ready]);
 
   const load = useCallback(async () => {
     try {
@@ -103,7 +137,9 @@ export default function Chat() {
     inp.click();
   };
 
-  const save = () => {
+  /* ── 保存：同时写 localStorage + 云端 ── */
+  const save = async () => {
+    // localStorage（CSS主题只存本地）
     try {
       localStorage.setItem("nn-css", css);
       localStorage.setItem("nn-av-nox", avNox);
@@ -111,11 +147,36 @@ export default function Chat() {
       localStorage.setItem("nn-wall", wall);
       localStorage.setItem("nn-name", name);
     } catch {}
+    // 云端同步（头像 + 名字 + 壁纸）
+    await Promise.all([
+      cfgSet("av_nox", avNox),
+      cfgSet("av_ning", avNing),
+      cfgSet("name", name),
+      cfgSet("wall", wall),
+    ]);
     setPage("chat");
   };
 
-  const time = (ts: string) => { try { const d = new Date(ts); return `${d.getHours().toString().padStart(2,"0")}:${d.getMinutes().toString().padStart(2,"0")}`; } catch { return ""; } };
-  const dateL = (ts: string) => { try { const d = new Date(ts), t = new Date(); if (d.toDateString()===t.toDateString()) return "今天"; const y = new Date(t); y.setDate(t.getDate()-1); if (d.toDateString()===y.toDateString()) return "昨天"; return `${d.getMonth()+1}月${d.getDate()}日`; } catch { return ""; } };
+  /* ── 时间显示：今天只显时分，其他日期显示 M/D HH:MM ── */
+  const time = (ts: string) => {
+    try {
+      const d = new Date(ts), now = new Date();
+      const hm = `${d.getHours().toString().padStart(2,"0")}:${d.getMinutes().toString().padStart(2,"0")}`;
+      if (d.toDateString() === now.toDateString()) return hm;
+      const yd = new Date(now); yd.setDate(now.getDate()-1);
+      if (d.toDateString() === yd.toDateString()) return `昨天 ${hm}`;
+      return `${d.getMonth()+1}月${d.getDate()}日 ${hm}`;
+    } catch { return ""; }
+  };
+  const dateL = (ts: string) => {
+    try {
+      const d = new Date(ts), t = new Date();
+      if (d.toDateString()===t.toDateString()) return "今天";
+      const y = new Date(t); y.setDate(t.getDate()-1);
+      if (d.toDateString()===y.toDateString()) return "昨天";
+      return `${d.getMonth()+1}月${d.getDate()}日`;
+    } catch { return ""; }
+  };
 
   const noxAv = (s: number) => avNox
     ? <img src={avNox} alt="" style={{width:s,height:s,borderRadius:s/2,objectFit:"cover"}} />
@@ -167,11 +228,12 @@ export default function Chat() {
         </div>
         <div>
           <label style={{fontSize:13,fontWeight:600,marginBottom:4,display:"block",color:"var(--c-text-title,#333)"}}>自定义 CSS 主题</label>
-          <p style={{fontSize:12,color:"#999",margin:"0 0 6px"}}>粘贴 Float 社区 CSS 主题代码，class 名完全兼容 ✔</p>
+          <p style={{fontSize:12,color:"#999",margin:"0 0 6px"}}>粘贴 Float 社区 CSS 主题代码，class 名完全兼容 ✔（CSS主题仅存本地）</p>
           <textarea value={css} onChange={e=>setCss(e.target.value)} placeholder="/* 粘贴主题CSS */"
             style={{width:"100%",height:200,padding:12,borderRadius:12,border:"1px solid rgba(0,0,0,0.12)",fontSize:13,fontFamily:"monospace",resize:"vertical",boxSizing:"border-box",background:"var(--c-input,#f0f0f0)",color:"var(--c-text,#333)"}} />
         </div>
         <button onClick={save} style={{padding:14,borderRadius:14,border:"none",background:"#D65A7C",color:"#fff",fontSize:16,fontWeight:600,cursor:"pointer"}}>保存设置 ♡</button>
+        <p style={{fontSize:11,color:"#bbb",textAlign:"center",margin:0}}>头像、名字、壁纸云端同步 ☁️ · CSS主题仅存本地</p>
       </div>
     </div>
   );
@@ -200,7 +262,6 @@ export default function Chat() {
         .nn-msg-row[data-role="user"] .nn-time{text-align:right}
       `}</style>
 
-      {/* Header */}
       <div className="page-header" style={{padding:"14px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",background:"var(--c-header-bg,rgba(245,245,245,0.9))",backdropFilter:"blur(12px)",borderBottom:"1px solid rgba(0,0,0,0.08)",flexShrink:0,zIndex:100}}>
         <div className="page-header-content" style={{display:"flex",alignItems:"center",gap:10,flex:1}}>
           {noxAv(36)}
@@ -209,14 +270,12 @@ export default function Chat() {
         <button onClick={()=>setPage("settings")} aria-label="设置" style={{background:"none",border:"none",fontSize:22,cursor:"pointer",padding:"4px 8px",color:"var(--c-text,#666)",lineHeight:1}}>⚙️</button>
       </div>
 
-      {/* Messages */}
       <div ref={ref} className="page-body chat-room-main-pane chat-scroll-anchored" style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:2,padding:"8px 0"}}>
         {msgs.map(m => {
           const dl = dateL(m.created_at), show = dl !== ld; if (show) ld = dl;
           const isNox = m.sender === "nox";
           return <div key={m.id}>
             {show && <div className="nn-date">{dl}</div>}
-            {/* 用 nn-msg-row 替代 chat-msg-wrapper，避免 Float 全局 CSS 干扰 */}
             <div className="nn-msg-row chat-msg-wrapper" data-role={isNox?"assistant":"user"}>
               <div className="chat-msg-avatar">{isNox ? noxAv(36) : ningAv(36)}</div>
               <div className="chat-msg-content-wrap" style={{display:"flex",flexDirection:"column"}}>
@@ -230,7 +289,6 @@ export default function Chat() {
         })}
       </div>
 
-      {/* Input */}
       <div className="chat-input-bar" style={{padding:"8px 12px",display:"flex",gap:8,alignItems:"flex-end",background:"var(--c-header-bg,rgba(245,245,245,0.95))",backdropFilter:"blur(12px)",borderTop:"1px solid rgba(0,0,0,0.08)",flexShrink:0,paddingBottom:"max(8px,env(safe-area-inset-bottom))"}}>
         <textarea className="chat-input-textarea" value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}} placeholder={`跟${name}聊聊...`} rows={1}
           style={{flex:1,padding:"10px 14px",borderRadius:20,border:"1px solid rgba(0,0,0,0.1)",fontSize:15,resize:"none",outline:"none",lineHeight:1.4,maxHeight:120,background:"var(--c-input,#f0f0f0)",color:"var(--c-text,#333)"}} />
