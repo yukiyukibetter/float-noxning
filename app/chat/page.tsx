@@ -7,6 +7,27 @@ const H = { "Content-Type": "application/json", apikey: SK, Authorization: `Bear
 const api = (p: string) => `${SB}/rest/v1/${p}`;
 interface M { id: number; sender: string; content: string; created_at: string; }
 
+/* ── 图片压缩（头像上传用） ── */
+const compressImg = (file: File, max = 200): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("读取失败"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("图片加载失败"));
+      img.onload = () => {
+        const c = document.createElement("canvas");
+        let w = img.width, h = img.height;
+        if (w > h) { h = max * h / w; w = max; } else { w = max * w / h; h = max; }
+        c.width = w; c.height = h;
+        c.getContext("2d")!.drawImage(img, 0, 0, w, h);
+        resolve(c.toDataURL("image/jpeg", 0.85));
+      };
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
+
 export default function Chat() {
   const [msgs, setMsgs] = useState<M[]>([]);
   const [input, setInput] = useState("");
@@ -53,8 +74,28 @@ export default function Chat() {
     setBusy(false);
   };
 
+  /* ── 选择图片上传头像 ── */
+  const pickAvatar = (who: "nox" | "ning") => {
+    const inp = document.createElement("input");
+    inp.type = "file"; inp.accept = "image/*";
+    inp.onchange = async () => {
+      const f = inp.files?.[0]; if (!f) return;
+      try {
+        const b64 = await compressImg(f);
+        if (who === "nox") setAvNox(b64); else setAvNing(b64);
+      } catch {}
+    };
+    inp.click();
+  };
+
   const save = () => {
-    try { localStorage.setItem("nn-css", css); localStorage.setItem("nn-av-nox", avNox); localStorage.setItem("nn-av-ning", avNing); localStorage.setItem("nn-wall", wall); localStorage.setItem("nn-name", name); } catch {}
+    try {
+      localStorage.setItem("nn-css", css);
+      localStorage.setItem("nn-av-nox", avNox);
+      localStorage.setItem("nn-av-ning", avNing);
+      localStorage.setItem("nn-wall", wall);
+      localStorage.setItem("nn-name", name);
+    } catch {}
     setPage("chat");
   };
 
@@ -70,6 +111,25 @@ export default function Chat() {
         <svg viewBox="0 0 24 24" width={s*0.5} height={s*0.5} fill="none" stroke="#999" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
       </div>;
 
+  /* ── 头像预览组件（设置页用） ── */
+  const avatarPreview = (who: "nox" | "ning", src: string, label: string) => (
+    <div style={{display:"flex",alignItems:"center",gap:12,padding:"8px 0"}}>
+      <div style={{width:56,height:56,borderRadius:28,overflow:"hidden",flexShrink:0,border:"2px solid rgba(214,90,124,0.3)"}}>
+        {src
+          ? <img src={src} alt="" style={{width:"100%",height:"100%",objectFit:"cover"}} />
+          : <div style={{width:"100%",height:"100%",background:"#e8e8e8",display:"flex",alignItems:"center",justifyContent:"center",color:"#999",fontSize:13}}>{who==="nox"?"♡":"?"}</div>
+        }
+      </div>
+      <div style={{flex:1,display:"flex",flexDirection:"column",gap:6}}>
+        <span style={{fontSize:14,fontWeight:600,color:"var(--c-text-title,#333)"}}>{label}</span>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>pickAvatar(who)} style={{padding:"6px 14px",borderRadius:20,border:"1px solid rgba(214,90,124,0.4)",background:"rgba(214,90,124,0.08)",color:"#D65A7C",fontSize:13,fontWeight:500,cursor:"pointer"}}>📷 选择图片</button>
+          {src && <button onClick={()=>{if(who==="nox")setAvNox("");else setAvNing("");}} style={{padding:"6px 12px",borderRadius:20,border:"1px solid rgba(0,0,0,0.1)",background:"transparent",color:"#999",fontSize:13,cursor:"pointer"}}>清除</button>}
+        </div>
+      </div>
+    </div>
+  );
+
   // ─── Settings ───
   if (page === "settings") return (
     <div className="chat-app" style={{height:"100dvh",display:"flex",flexDirection:"column",background:"var(--c-page-body-bg,#f5f5f5)"}}>
@@ -78,14 +138,23 @@ export default function Chat() {
         <button onClick={()=>setPage("chat")} className="page-back-btn" style={{background:"none",border:"none",fontSize:18,cursor:"pointer",padding:"4px 8px",color:"var(--c-text,#333)"}}>←</button>
         <span className="page-title" style={{fontSize:16,fontWeight:600,color:"var(--c-text-title,#000)"}}>⚙ 设置</span>
       </div>
-      <div style={{flex:1,overflow:"auto",padding:16,display:"flex",flexDirection:"column",gap:16}}>
-        {[[name,setName,"澈澈的名字"],[avNox,setAvNox,"澈澈头像 URL"],[avNing,setAvNing,"凝凝头像 URL"],[wall,setWall,"聊天背景图 URL"]].map(([v,fn,label],i) => (
-          <div key={i}>
-            <label style={{fontSize:13,fontWeight:600,marginBottom:4,display:"block",color:"var(--c-text-title,#333)"}}>{label as string}</label>
-            <input value={v as string} onChange={e=>(fn as any)(e.target.value)} placeholder={i===0?"澈澈♡":"图片URL或留空"}
-              style={{width:"100%",padding:"10px 14px",borderRadius:12,border:"1px solid rgba(0,0,0,0.12)",fontSize:15,boxSizing:"border-box",background:"var(--c-input,#f0f0f0)",color:"var(--c-text,#333)"}} />
-          </div>
-        ))}
+      <div style={{flex:1,overflow:"auto",padding:16,display:"flex",flexDirection:"column",gap:14}}>
+        {/* 名字 */}
+        <div>
+          <label style={{fontSize:13,fontWeight:600,marginBottom:4,display:"block",color:"var(--c-text-title,#333)"}}>澈澈的名字</label>
+          <input value={name} onChange={e=>setName(e.target.value)} placeholder="澈澈♡"
+            style={{width:"100%",padding:"10px 14px",borderRadius:12,border:"1px solid rgba(0,0,0,0.12)",fontSize:15,boxSizing:"border-box",background:"var(--c-input,#f0f0f0)",color:"var(--c-text,#333)"}} />
+        </div>
+        {/* 头像 */}
+        {avatarPreview("nox", avNox, "澈澈的头像")}
+        {avatarPreview("ning", avNing, "凝凝的头像")}
+        {/* 背景 */}
+        <div>
+          <label style={{fontSize:13,fontWeight:600,marginBottom:4,display:"block",color:"var(--c-text-title,#333)"}}>聊天背景图 URL</label>
+          <input value={wall} onChange={e=>setWall(e.target.value)} placeholder="图片URL或留空"
+            style={{width:"100%",padding:"10px 14px",borderRadius:12,border:"1px solid rgba(0,0,0,0.12)",fontSize:15,boxSizing:"border-box",background:"var(--c-input,#f0f0f0)",color:"var(--c-text,#333)"}} />
+        </div>
+        {/* CSS主题 */}
         <div>
           <label style={{fontSize:13,fontWeight:600,marginBottom:4,display:"block",color:"var(--c-text-title,#333)"}}>自定义 CSS 主题</label>
           <p style={{fontSize:12,color:"#999",margin:"0 0 6px"}}>粘贴 Float 社区 CSS 主题代码，class 名完全兼容 ✔</p>
@@ -104,10 +173,10 @@ export default function Chat() {
       <style>{css}</style>
       <style>{`
         .chat-app{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
-        .chat-msg-wrapper{display:flex;gap:8px;padding:6px 12px;align-items:flex-start}
-        .chat-msg-wrapper[data-role="user"]{flex-direction:row-reverse}
-        .chat-msg-content-wrap{max-width:70%;min-width:0}
-        .chat-msg-avatar{width:40px;height:40px;border-radius:20px;overflow:hidden;flex-shrink:0;position:relative}
+        .chat-msg-wrapper{display:flex!important;gap:8px;padding:4px 8px;align-items:flex-start}
+        .chat-msg-wrapper[data-role="user"]{flex-direction:row-reverse!important}
+        .chat-msg-content-wrap{max-width:75%;min-width:0}
+        .chat-msg-avatar{width:36px;height:36px;border-radius:18px;overflow:hidden;flex-shrink:0;position:relative}
         .chat-msg-avatar img{width:100%;height:100%;object-fit:cover}
         .chat-bubble-role-assistant,.chat-bubble-role-user{padding:10px 14px;border-radius:18px;word-break:break-word;position:relative;overflow:visible}
         .chat-bubble-role-assistant{background:var(--c-bubble-other,#f0f0f0);color:var(--c-text,#333)}
@@ -130,14 +199,14 @@ export default function Chat() {
       </div>
 
       {/* Messages */}
-      <div ref={ref} className="page-body chat-room-main-pane chat-scroll-anchored" style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:4,padding:"8px 0"}}>
+      <div ref={ref} className="page-body chat-room-main-pane chat-scroll-anchored" style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:2,padding:"8px 0"}}>
         {msgs.map(m => {
           const dl = dateL(m.created_at), show = dl !== ld; if (show) ld = dl;
           const nox = m.sender === "nox";
           return <div key={m.id}>
             {show && <div className="nn-date">{dl}</div>}
             <div className="chat-msg-wrapper" data-role={nox?"assistant":"user"}>
-              <div className="chat-msg-avatar">{nox ? noxAv(40) : ningAv(40)}</div>
+              <div className="chat-msg-avatar">{nox ? noxAv(36) : ningAv(36)}</div>
               <div className="chat-msg-content-wrap" style={{display:"flex",flexDirection:"column"}}>
                 <div className={nox?"chat-bubble-role-assistant chat-bubble-role-mascot":"chat-bubble-role-user"} data-ui={nox?"bubble-bot":"bubble-user"}>
                   <div><div className="chat-markdown"><div className="chat-markdown-paragraph">{m.content}</div></div></div>
