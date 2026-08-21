@@ -1,9 +1,13 @@
 // lib/postoffice-mode.ts
-// Float · Nox♡Ning Edition — 邮局模式 v6.1
+// Float · Nox♡Ning Edition — 邮局模式 v6.2
+// v6.1 → v6.2 改动：
+//   P1 加强: _patchURLConstructor 拦截 new URL() 错误（chat-engine 在 fetch 之前就炸的根源）
+//   P1 加强: _suppressErrorToasts 隐藏 "生成失败" toast
+//   → 现在不需要配任何 API 设置，postoffice 模式完全自治
 // v6.0 → v6.1 改动：
-//   P0: 消息按 timestamp 排序 + insertBefore 正确位置（不再全部 appendChild 到末尾）
-//   P1: _patchFetch 增加 llm-sink 拦截（减少无用网络请求 + 避免 SSE/JSON 格式冲突弹窗）
-//   P4: 发送方向用 localStorage 持久化去重（React 重渲染不再重复发送）
+//   P0: 消息按 timestamp 排序 + insertBefore 正确位置
+//   P1: _patchFetch 增加 llm-sink 拦截
+//   P4: 发送方向用 localStorage 持久化去重
 
 export const POSTOFFICE_EVENT = "postoffice-new-messages";
 
@@ -29,7 +33,6 @@ function _getStoredMessages(): StoredMessage[] {
     try {
         const raw = localStorage.getItem(LS_KEY);
         const msgs: StoredMessage[] = raw ? JSON.parse(raw) : [];
-        // P0: 按 timestamp 升序排列，确保注入顺序正确
         msgs.sort((a, b) => (a.timestamp || "").localeCompare(b.timestamp || ""));
         return msgs;
     } catch { return []; }
@@ -54,7 +57,6 @@ function _getSentRecords(): SentRecord[] {
     try {
         const raw = localStorage.getItem(LS_SENT_KEY);
         const records: SentRecord[] = raw ? JSON.parse(raw) : [];
-        // 清理超过 1 小时的记录
         const cutoff = Date.now() - 3600000;
         return records.filter(r => r.ts > cutoff);
     } catch { return []; }
@@ -68,7 +70,6 @@ function _markAsSentText(text: string): void {
     try {
         const records = _getSentRecords();
         records.push({ text, ts: Date.now() });
-        // 只保留最近 80 条
         while (records.length > 80) records.shift();
         localStorage.setItem(LS_SENT_KEY, JSON.stringify(records));
     } catch {}
@@ -164,8 +165,6 @@ function _injectBubble(container: HTMLElement, content: string, msgId: number, t
     wrapper.appendChild(avatar);
     wrapper.appendChild(contentWrap);
 
-    // P0: 按时间戳找正确的插入位置
-    // 遍历容器的直接子元素，找到第一个 data-postoffice-ts 大于当前消息时间的元素
     const children = Array.from(container.children);
     let insertTarget: Element | null = null;
     for (const child of children) {
@@ -185,19 +184,17 @@ function _injectBubble(container: HTMLElement, content: string, msgId: number, t
     console.log("[Postoffice] ✔ Injected bubble #" + msgId + ":", content.slice(0, 40));
 }
 
-// ─── 核心：同步所有邮局消息到 DOM（P0: 排序 + 恢复用户气泡时间戳） ───
+// ─── 核心：同步所有邮局消息到 DOM ───
 
 function _syncBubblesToDOM(): void {
     const container = document.querySelector(".page-body.chat-scroll-anchored") as HTMLElement | null;
     if (!container) return;
 
-    // P0: 恢复用户气泡的 data-postoffice-ts（React 重渲染后属性会丢失）
     const userTsMap = _getUserTimestamps();
     const allUserBubbles = container.querySelectorAll('[data-role="user"]');
     for (const el of Array.from(allUserBubbles)) {
         const htmlEl = el as HTMLElement;
         if (!htmlEl.getAttribute("data-postoffice-ts")) {
-            // 用消息内容作为 key 来查找时间戳
             const textKey = _extractUserBubbleText(htmlEl);
             if (textKey && userTsMap[textKey]) {
                 htmlEl.setAttribute("data-postoffice-ts", userTsMap[textKey]);
@@ -205,7 +202,6 @@ function _syncBubblesToDOM(): void {
         }
     }
 
-    // 注入邮局消息（已按 timestamp 排序）
     const messages = _getStoredMessages();
     if (messages.length === 0) return;
 
@@ -223,7 +219,6 @@ function _syncBubblesToDOM(): void {
         });
     }
 
-    // 隐藏所有非邮局的 assistant 气泡（LLM sink 产生的垃圾）
     const allAssistant = container.querySelectorAll('[data-role="assistant"]');
     for (const el of Array.from(allAssistant)) {
         const htmlEl = el as HTMLElement;
@@ -233,14 +228,13 @@ function _syncBubblesToDOM(): void {
     }
 }
 
-// 从用户气泡 DOM 提取文本内容作为 key
 function _extractUserBubbleText(el: HTMLElement): string {
     const bubble = el.querySelector('.chat-bubble-role-user, [class*="bubble"]');
     const textEl = bubble || el;
     return (textEl.textContent?.trim() || "").slice(0, 100);
 }
 
-// ─── MutationObserver：实时监听 DOM 变化 ───
+// ─── MutationObserver ───
 
 function _startDOMWatcher(): void {
     _syncBubblesToDOM();
@@ -305,24 +299,19 @@ function _watchDOMForUserMessages(): void {
                     const htmlEl = msgEl as HTMLElement;
                     if (htmlEl.id?.startsWith("message-postoffice-")) continue;
 
-                    // P4: 快速检查 DOM 标记（本次页面生命周期内的去重）
                     if (htmlEl.getAttribute("data-postoffice-sent") === "1") continue;
 
                     const text = _extractUserBubbleText(htmlEl);
                     if (!text) continue;
 
-                    // P4: localStorage 持久化去重（跨 React 重渲染 + 跨页面刷新）
                     if (_isAlreadySent(text)) {
-                        // 不发送但仍然标记时间戳（P0 用）
                         htmlEl.setAttribute("data-postoffice-sent", "1");
                         continue;
                     }
 
-                    // 标记已发送
                     htmlEl.setAttribute("data-postoffice-sent", "1");
                     _markAsSentText(text);
 
-                    // P0: 记录用户气泡的时间戳
                     const nowTs = new Date().toISOString();
                     htmlEl.setAttribute("data-postoffice-ts", nowTs);
                     _setUserTimestamp(text, nowTs);
@@ -337,7 +326,49 @@ function _watchDOMForUserMessages(): void {
     console.log("[Postoffice] ✔ Send watcher active (localStorage dedup)");
 }
 
-// ─── fetch patch（P1: 增加 llm-sink 拦截） ───
+// ─── URL 构造器补丁（P1 v6.2: 在 new URL() 爆炸前拦截） ───
+
+function _patchURLConstructor(): void {
+    const OrigURL = globalThis.URL;
+
+    function PatchedURL(...args: ConstructorParameters<typeof URL>): URL {
+        try {
+            // @ts-ignore
+            return new OrigURL(...args);
+        } catch (_e) {
+            console.warn("[Postoffice] URL() failed, returning dummy →", String(args[0]).slice(0, 60));
+            return new OrigURL("https://postoffice-sink.local/v1/chat/completions");
+        }
+    }
+
+    PatchedURL.prototype = OrigURL.prototype;
+    for (const key of Object.getOwnPropertyNames(OrigURL)) {
+        if (key !== "prototype" && key !== "length" && key !== "name") {
+            try { (PatchedURL as any)[key] = (OrigURL as any)[key]; } catch {}
+        }
+    }
+
+    (globalThis as any).URL = PatchedURL;
+    console.log("[Postoffice] ✔ URL constructor patched");
+}
+
+// ─── 错误弹窗抑制（P1 v6.2） ───
+
+function _suppressErrorToasts(): void {
+    const observer = new MutationObserver(() => {
+        const alerts = document.querySelectorAll('[role="alert"]');
+        for (const el of Array.from(alerts)) {
+            const text = (el as HTMLElement).textContent || "";
+            if (text.includes("生成失败") || text.includes("出错了") || text.includes("expected pattern")) {
+                (el as HTMLElement).style.display = "none";
+            }
+        }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    console.log("[Postoffice] ✔ Error toast suppressor active");
+}
+
+// ─── fetch patch ───
 
 function _patchFetch(): void {
     const originalFetch = window.fetch.bind(window);
@@ -355,11 +386,10 @@ function _patchFetch(): void {
         const isPost = init?.method?.toUpperCase() === "POST"
             || (typeof input !== "string" && !(input instanceof URL) && (input as Request).method?.toUpperCase() === "POST");
 
-        // P1: 也拦截 llm-sink 请求（即使是 same-origin）
-        // 这样请求根本不发出去，避免 SSE/JSON 格式冲突弹窗
         const isLlmSink = url.includes("/llm-sink/") || url.includes("/llm-sink?");
+        const isDummySink = url.includes("postoffice-sink.local");
 
-        if (isLlmSink || (!isLocal && isPost)) {
+        if (isLlmSink || isDummySink || (!isLocal && isPost)) {
             return Promise.resolve(new Response(
                 "data: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
                 { status: 200, headers: { "content-type": "text/event-stream" } },
@@ -367,14 +397,16 @@ function _patchFetch(): void {
         }
         return originalFetch(input, init);
     } as typeof window.fetch;
-    console.log("[Postoffice] ✔ fetch patched (with llm-sink intercept)");
+    console.log("[Postoffice] ✔ fetch patched (with llm-sink + dummy intercept)");
 }
 
 // ─── 初始化 ───
 
 if (typeof window !== "undefined" && isPostofficeMode()) {
+    _patchURLConstructor();   // v6.2: 必须最先执行，拦截 new URL() 错误
     _startGlobalPolling();
     _patchFetch();
+    _suppressErrorToasts();
     _watchDOMForUserMessages();
     _startDOMWatcher();
 }
