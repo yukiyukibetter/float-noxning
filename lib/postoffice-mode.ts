@@ -9,26 +9,26 @@ declare global {
         __postoffice?: {
             started: boolean;
             pending: any[];
+            sentContents: Set<string>;
         };
     }
 }
 
 function _state() {
-    if (typeof window === "undefined") return { started: false, pending: [] as any[] };
-    if (!window.__postoffice) window.__postoffice = { started: false, pending: [] };
+    if (typeof window === "undefined") return { started: false, pending: [] as any[], sentContents: new Set<string>() };
+    if (!window.__postoffice) window.__postoffice = { started: false, pending: [], sentContents: new Set<string>() };
+    // 兼容旧版本没有 sentContents 的情况
+    if (!window.__postoffice.sentContents) window.__postoffice.sentContents = new Set<string>();
     return window.__postoffice;
 }
 
 export function isPostofficeMode(): boolean {
     if (typeof window === "undefined") return false;
-    const val = localStorage.getItem("float-postoffice-mode");
-    const result = val !== "false";
-    console.log("[Postoffice] ★ isPostofficeMode() called ★ result:", result, "localStorage:", val, "caller:", new Error().stack?.split("\n")[2]?.trim());
-    return result;
+    return localStorage.getItem("float-postoffice-mode") !== "false";
 }
 
 export async function sendPostofficeMessage(content: string): Promise<boolean> {
-    console.log("[Postoffice] ★★★ sendPostofficeMessage CALLED ★★★", content.slice(0, 80));
+    console.log("[Postoffice] ★ Sending message:", content.slice(0, 80));
     try {
         const res = await fetch("/api/float-chat", {
             method: "POST",
@@ -74,6 +74,32 @@ function _startGlobalPolling(): void {
     setInterval(poll, 3000);
 }
 
+/**
+ * 核弹级方案 v2：监听 chat-message-pushed 事件
+ * pushChatMessage 每次创建消息后都会派发这个事件
+ * 不依赖 chat-room.tsx 里的任何代码
+ */
+function _watchUserMessages(): void {
+    window.addEventListener("chat-message-pushed", (e: Event) => {
+        const msg = (e as CustomEvent).detail?.message;
+        if (!msg || msg.role !== "user") return;
+        // 跳过特殊消息类型（拍一拍、红包等不需要发到邮局）
+        if (msg.mediaType && msg.mediaType !== "quote") return;
+        const content = msg.content?.trim();
+        if (!content) return;
+        // 防重复：同样内容2秒内不重复发送
+        const state = _state();
+        const dedupeKey = `${content}:${Math.floor(Date.now() / 2000)}`;
+        if (state.sentContents.has(dedupeKey)) return;
+        state.sentContents.add(dedupeKey);
+        // 3秒后清理防重复记录
+        setTimeout(() => state.sentContents.delete(dedupeKey), 3000);
+        console.log("[Postoffice] ★★★ User message detected via event! Sending to postoffice ★★★", content.slice(0, 50));
+        sendPostofficeMessage(content);
+    });
+    console.log("[Postoffice] ✔ Watching chat-message-pushed events for user messages");
+}
+
 function _patchFetchForPostoffice(): void {
     const originalFetch = window.fetch.bind(window);
     window.fetch = function patchedFetch(
@@ -111,4 +137,5 @@ function _patchFetchForPostoffice(): void {
 if (typeof window !== "undefined" && isPostofficeMode()) {
     _startGlobalPolling();
     _patchFetchForPostoffice();
+    _watchUserMessages();
 }
