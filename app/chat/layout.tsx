@@ -1,4 +1,10 @@
 // app/chat/layout.tsx — 独立layout，隔离Float的全局样式
+import type { Viewport } from "next";
+
+export const viewport: Viewport = {
+  viewportFit: "cover",
+};
+
 export default function ChatLayout({ children }: { children: React.ReactNode }) {
   return (
     <>
