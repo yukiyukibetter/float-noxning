@@ -1,4 +1,4 @@
-const CACHE_VERSION = "ai-phone-pwa-v4";
+const CACHE_VERSION = "ai-phone-pwa-v5";
 const STATIC_CACHE = `${CACHE_VERSION}-static`;
 const RUNTIME_CACHE = `${CACHE_VERSION}-runtime`;
 
@@ -25,8 +25,6 @@ self.addEventListener("activate", (event) => {
           .filter((key) => !key.startsWith(CACHE_VERSION))
           .map((key) => caches.delete(key))
       ))
-      // 刷新预缓存的 "/" 快照：它是离线导航的最终兜底，若停留在旧部署版本，
-      // 引用的旧 hash CSS/JS 已 404，会渲染出无样式页面（文字堆在左上角）。
       .then(() => caches.open(STATIC_CACHE))
       .then((cache) => cache.add(new Request("/", { cache: "reload" })).catch(() => {}))
       .then(() => self.clients.claim())
@@ -57,10 +55,6 @@ async function networkFirst(request) {
   }
 }
 
-// 静态资源（字体/图片/脚本/样式/模型）用 cache-first：命中缓存直接返回，
-// 不再每次都在后台把整份文件重新拉一遍校验。字体动辄 7~24MB，旧的
-// stale-while-revalidate 会持续重下，是带宽爆掉的主因之一。
-// 需要更新缓存内容时，升 CACHE_VERSION 即可让旧缓存在 activate 时清空。
 async function cacheFirst(request) {
   const cache = await caches.open(RUNTIME_CACHE);
   const cached = await cache.match(request);
