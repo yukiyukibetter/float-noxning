@@ -1,7 +1,8 @@
 // app/api/float-chat/route.ts
 // Float · Nox♡Ning Edition — 邮局消息中转站
 // POST: 凝凝发消息 → 写入 float_messages (sender='ning')
-// GET:  拉取澈澈的回复 → 读取 float_messages (sender='nox', is_read=false)
+// GET:  拉取澈澈的回复 → 读取 float_messages (sender='nox', is_read=false)。不标记已读。
+// PATCH: 客户端确认注入成功后调用，标记指定消息为已读
 
 import { NextRequest, NextResponse } from "next/server";
 
@@ -46,10 +47,9 @@ export async function POST(req: NextRequest) {
     }
 }
 
-// GET: 拉取新消息（sender='nox', is_read=false）
+// GET: 拉取新消息（不标记已读，等客户端 PATCH 确认）
 export async function GET() {
     try {
-        // 查询未读消息
         const query = "float_messages?sender=eq.nox&is_read=eq.false&order=created_at.asc";
         const res = await fetch(supabaseRest(query), {
             method: "GET",
@@ -60,18 +60,31 @@ export async function GET() {
             throw new Error(`Supabase query failed: ${res.status} ${text}`);
         }
         const messages = await res.json();
-
-        // 标记已读
-        if (Array.isArray(messages) && messages.length > 0) {
-            const ids = messages.map((m: { id: string }) => m.id);
-            await fetch(supabaseRest(`float_messages?id=in.(${ids.join(",")})`), {
-                method: "PATCH",
-                headers: supabaseHeaders(),
-                body: JSON.stringify({ is_read: true }),
-            });
-        }
-
         return NextResponse.json({ messages: messages || [] });
+    } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return NextResponse.json({ error: message }, { status: 500 });
+    }
+}
+
+// PATCH: 标记消息为已读（客户端注入成功后调用）
+export async function PATCH(req: NextRequest) {
+    try {
+        const body = await req.json();
+        const ids = body.ids;
+        if (!Array.isArray(ids) || ids.length === 0) {
+            return NextResponse.json({ error: "No ids provided" }, { status: 400 });
+        }
+        const res = await fetch(supabaseRest(`float_messages?id=in.(${ids.join(",")})`), {
+            method: "PATCH",
+            headers: supabaseHeaders(),
+            body: JSON.stringify({ is_read: true }),
+        });
+        if (!res.ok) {
+            const text = await res.text();
+            throw new Error(`Supabase patch failed: ${res.status} ${text}`);
+        }
+        return NextResponse.json({ ok: true });
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         return NextResponse.json({ error: message }, { status: 500 });
