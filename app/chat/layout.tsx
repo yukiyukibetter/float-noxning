@@ -16,8 +16,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
         body > .css-import-enhancer,
         body > [data-chat-plugin],
         body > [data-reasoning] { display: none !important; }
-        /* 清除Float的page-title::after装饰 */
-        .page-title::after { content: none !important; }
+        /* 注意：不再清除 .page-title::after，让 CSS 主题的额外装饰（如莓莓兔丸的颜文字）正常显示 */
       `}</style>
       {children}
     </>
