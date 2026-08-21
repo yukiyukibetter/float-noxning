@@ -1,6 +1,6 @@
 // lib/postoffice-mode.ts
-// Float · Nox♡Ning Edition — 邮局模式
-// 所有状态存 window，避免 Next.js 代码分割导致模块重复实例化
+// Float · Nox♡Ning Edition — 邮局模式 v4
+// DOM MutationObserver：监听用户消息气泡出现，提取文字发邮局
 
 export const POSTOFFICE_EVENT = "postoffice-new-messages";
 
@@ -9,15 +9,15 @@ declare global {
         __postoffice?: {
             started: boolean;
             pending: any[];
-            sentIds: Set<string>;
+            sentTexts: Set<string>;
         };
     }
 }
 
 function _state() {
-    if (typeof window === "undefined") return { started: false, pending: [] as any[], sentIds: new Set<string>() };
-    if (!window.__postoffice) window.__postoffice = { started: false, pending: [], sentIds: new Set<string>() };
-    if (!window.__postoffice.sentIds) window.__postoffice.sentIds = new Set<string>();
+    if (typeof window === "undefined") return { started: false, pending: [] as any[], sentTexts: new Set<string>() };
+    if (!window.__postoffice) window.__postoffice = { started: false, pending: [], sentTexts: new Set<string>() };
+    if (!window.__postoffice.sentTexts) window.__postoffice.sentTexts = new Set<string>();
     return window.__postoffice;
 }
 
@@ -74,40 +74,39 @@ function _startGlobalPolling(): void {
 }
 
 /**
- * 核弹级方案 v3：hook IndexedDB put 操作
- * pushChatMessage 最终会调用 IDBObjectStore.put 写入消息
- * 这是最底层的拦截，不可能被 tree-shake
+ * 核弹级方案 v4：MutationObserver 监听 DOM
+ * 用户消息气泡出现在 DOM 时，提取文字内容发到邮局
+ * 这是最底层的拦截——DOM 变化不可能被任何编译器优化掉
  */
-function _hookIndexedDBForUserMessages(): void {
-    const originalPut = IDBObjectStore.prototype.put;
-    IDBObjectStore.prototype.put = function(value: any, key?: IDBValidKey) {
-        // 只拦截 messages 表的 user 消息
-        if (
-            this.name === "messages" &&
-            value &&
-            typeof value === "object" &&
-            value.role === "user" &&
-            typeof value.content === "string" &&
-            value.content.trim()
-        ) {
-            const msgId = value.id || "";
-            const state = _state();
-            // 防重复：同一个消息ID只发一次
-            if (msgId && !state.sentIds.has(msgId)) {
-                state.sentIds.add(msgId);
-                // 10秒后清理防重复记录
-                setTimeout(() => state.sentIds.delete(msgId), 10000);
-                // 跳过特殊消息类型（拍一拍、骰子、工具等）
-                const mt = value.mediaType;
-                if (!mt || mt === "quote") {
-                    console.log("[Postoffice] ★★★ IDB hook: user message detected! ★★★", value.content.slice(0, 50));
-                    sendPostofficeMessage(value.content.trim());
+function _watchDOMForUserMessages(): void {
+    const observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+            for (const node of Array.from(mutation.addedNodes)) {
+                if (!(node instanceof HTMLElement)) continue;
+                // 查找 data-role="user" 的消息 wrapper
+                const userMsgs = node.matches?.('[data-role="user"]')
+                    ? [node]
+                    : Array.from(node.querySelectorAll?.('[data-role="user"]') || []);
+                for (const msgEl of userMsgs) {
+                    // 提取消息文字（跳过系统消息、拍一拍等）
+                    const bubble = (msgEl as HTMLElement).querySelector?.('.chat-bubble-role-user, [class*="bubble"]');
+                    const textEl = bubble || msgEl;
+                    const text = (textEl as HTMLElement).textContent?.trim();
+                    if (!text) continue;
+                    const state = _state();
+                    // 防重复：同一文字3秒内不重复发送
+                    const dedupeKey = `${text}:${Math.floor(Date.now() / 3000)}`;
+                    if (state.sentTexts.has(dedupeKey)) continue;
+                    state.sentTexts.add(dedupeKey);
+                    setTimeout(() => state.sentTexts.delete(dedupeKey), 5000);
+                    console.log("[Postoffice] ★★★ DOM: user bubble detected! ★★★", text.slice(0, 50));
+                    sendPostofficeMessage(text);
                 }
             }
         }
-        return originalPut.call(this, value, key);
-    };
-    console.log("[Postoffice] ✔ IndexedDB put hooked — user messages will be auto-sent to postoffice");
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    console.log("[Postoffice] ✔ DOM MutationObserver active — watching for user message bubbles");
 }
 
 function _patchFetchForPostoffice(): void {
@@ -147,5 +146,5 @@ function _patchFetchForPostoffice(): void {
 if (typeof window !== "undefined" && isPostofficeMode()) {
     _startGlobalPolling();
     _patchFetchForPostoffice();
-    _hookIndexedDBForUserMessages();
+    _watchDOMForUserMessages();
 }
