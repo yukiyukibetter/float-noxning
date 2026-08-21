@@ -1,6 +1,8 @@
 // lib/postoffice-mode.ts
-// Float · Nox♡Ning Edition — 邮局模式 v4.1
-// 双向 DOM 方案：发送用 MutationObserver 捕获用户气泡，接收用 DOM 注入 assistant 气泡
+// Float · Nox♡Ning Edition — 邮局模式 v5.0
+// 发送：MutationObserver 捕获用户气泡 → POST /api/float-chat
+// 接收：轮询 GET /api/float-chat → 注入正确结构的 assistant 气泡
+// 清理：隐藏 LLM sink 产生的错误/✉️ 气泡
 
 export const POSTOFFICE_EVENT = "postoffice-new-messages";
 
@@ -46,56 +48,66 @@ export function drainPendingMessages(): any[] {
     return _state().pending.splice(0);
 }
 
-/**
- * 接收方向：将收到的消息注入聊天 DOM
- * 不依赖 chat-room.tsx 的任何代码
- */
+// ─── 接收方向：注入 assistant 气泡 ───
+
 function _injectAssistantBubble(content: string): boolean {
-    // 找到聊天滚动容器
-    const scrollContainer = document.querySelector('.page-body.chat-scroll-anchored') as HTMLElement | null;
-    if (!scrollContainer) {
-        console.warn("[Postoffice] No chat scroll container found, trying fallback");
-        // fallback: 找任何 page-body
-        const fallback = document.querySelector('.page-body') as HTMLElement | null;
-        if (!fallback) return false;
-        return _doInjectBubble(fallback, content);
+    const container = document.querySelector('.page-body.chat-scroll-anchored') as HTMLElement | null;
+    if (!container) {
+        console.warn("[Postoffice] No chat container, storing as pending");
+        return false;
     }
-    return _doInjectBubble(scrollContainer, content);
+    return _doInjectBubble(container, content);
 }
 
 function _doInjectBubble(container: HTMLElement, content: string): boolean {
-    // 创建 wrapper (chat-msg-wrapper data-role="assistant")
+    // 完全复刻 Float 的 assistant 消息 DOM 结构
     const wrapper = document.createElement('div');
     wrapper.className = 'chat-msg-wrapper';
     wrapper.setAttribute('data-role', 'assistant');
     wrapper.id = `message-postoffice-${Date.now()}`;
 
-    // 创建气泡容器
-    const bubbleOuter = document.createElement('div');
-    bubbleOuter.className = 'flex flex-col min-w-0 max-w-[75%]';
+    // 1. 头像（在前）
+    const avatar = document.createElement('div');
+    avatar.className = 'chat-msg-avatar w-[40px] h-[40px] rounded-[20px] bg-white shrink-0 flex items-center justify-center overflow-hidden';
+    avatar.innerHTML = '<img class="w-full h-full object-contain p-[2px]" alt="澈澈" src="/mascot.png">';
 
-    // 创建气泡本体
+    // 2. 内容包裹
+    const contentWrap = document.createElement('div');
+    contentWrap.className = 'chat-msg-content-wrap flex flex-col min-w-0 max-w-[70%]';
+
+    // 3. 气泡
     const bubble = document.createElement('div');
-    bubble.className = 'chat-bubble-role-assistant py-2 px-3 rounded-md break-words';
-    
-    // 创建文字内容
-    const textDiv = document.createElement('div');
-    textDiv.style.cssText = 'white-space:pre-wrap;word-break:break-word;';
-    textDiv.textContent = content;
-    
-    bubble.appendChild(textDiv);
-    bubbleOuter.appendChild(bubble);
-    wrapper.appendChild(bubbleOuter);
+    bubble.className = 'chat-bubble-role-assistant chat-bubble-role-mascot rounded-md break-words relative cursor-pointer select-none';
+    bubble.setAttribute('data-ui', 'bubble-bot');
+
+    // 4. 内容（chat-markdown > chat-markdown-paragraph）
+    const innerDiv = document.createElement('div');
+    const markdown = document.createElement('div');
+    markdown.className = 'chat-markdown hide-scrollbar break-words';
+    const paragraph = document.createElement('div');
+    paragraph.className = 'chat-markdown-paragraph';
+    paragraph.textContent = content;
+
+    markdown.appendChild(paragraph);
+    innerDiv.appendChild(markdown);
+    bubble.appendChild(innerDiv);
+    contentWrap.appendChild(bubble);
+
+    // 组装：头像 + 内容
+    wrapper.appendChild(avatar);
+    wrapper.appendChild(contentWrap);
     container.appendChild(wrapper);
-    
+
     // 滚动到底部
     requestAnimationFrame(() => {
         container.scrollTop = container.scrollHeight;
     });
-    
+
     console.log("[Postoffice] ✔ Injected assistant bubble:", content.slice(0, 50));
     return true;
 }
+
+// ─── 轮询 ───
 
 function _startGlobalPolling(): void {
     const s = _state();
@@ -111,14 +123,11 @@ function _startGlobalPolling(): void {
             if (data.messages?.length > 0) {
                 console.log("[Postoffice] New messages:", data.messages.length);
                 for (const msg of data.messages) {
-                    // 尝试直接注入 DOM
                     const injected = _injectAssistantBubble(msg.content);
                     if (!injected) {
-                        // 如果聊天室没打开，存入 pending
                         _state().pending.push(msg);
                     }
                 }
-                // 同时派发事件（以防 chat-room.tsx 的 useEffect 偶尔能工作）
                 window.dispatchEvent(
                     new CustomEvent(POSTOFFICE_EVENT, { detail: { messages: data.messages } }),
                 );
@@ -132,18 +141,14 @@ function _startGlobalPolling(): void {
     setInterval(poll, 3000);
 }
 
-/**
- * 发送方向：MutationObserver 监听 DOM
- * 用户消息气泡出现在 DOM 时，提取文字内容发到邮局
- */
+// ─── 发送方向：MutationObserver 捕获用户气泡 ───
+
 function _watchDOMForUserMessages(): void {
     const observer = new MutationObserver((mutations) => {
         for (const mutation of mutations) {
             for (const node of Array.from(mutation.addedNodes)) {
                 if (!(node instanceof HTMLElement)) continue;
-                // 跳过我们自己注入的 postoffice 气泡
                 if (node.id?.startsWith('message-postoffice-')) continue;
-                // 查找 data-role="user" 的消息 wrapper
                 const userMsgs = node.matches?.('[data-role="user"]')
                     ? [node]
                     : Array.from(node.querySelectorAll?.('[data-role="user"]') || []);
@@ -167,6 +172,64 @@ function _watchDOMForUserMessages(): void {
     observer.observe(document.body, { childList: true, subtree: true });
     console.log("[Postoffice] ✔ DOM MutationObserver active");
 }
+
+// ─── 清理 LLM sink 产生的垃圾气泡 ───
+
+// 匹配需要隐藏的 assistant 气泡内容
+const LLM_JUNK_PATTERNS = [
+    '出错了...请先在设置',
+    '✉️',
+    '出错了…请先在设置',
+];
+
+function _isJunkBubble(el: HTMLElement): boolean {
+    const text = el.textContent?.trim() || '';
+    return LLM_JUNK_PATTERNS.some(p => text.includes(p));
+}
+
+function _hideJunkBubbles(): void {
+    // 隐藏已存在的垃圾气泡
+    const assistantMsgs = document.querySelectorAll('[data-role="assistant"]:not([id^="message-postoffice-"])');
+    for (const msg of Array.from(assistantMsgs)) {
+        if (_isJunkBubble(msg as HTMLElement)) {
+            (msg as HTMLElement).style.display = 'none';
+        }
+    }
+}
+
+function _watchAndHideJunkBubbles(): void {
+    // 先清理现有的
+    _hideJunkBubbles();
+
+    // 监听新增的
+    const observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+            for (const node of Array.from(mutation.addedNodes)) {
+                if (!(node instanceof HTMLElement)) continue;
+                // 跳过我们自己的气泡
+                if (node.id?.startsWith('message-postoffice-')) continue;
+                // 检查新增的 assistant 气泡
+                const assistantMsgs = node.matches?.('[data-role="assistant"]')
+                    ? [node]
+                    : Array.from(node.querySelectorAll?.('[data-role="assistant"]') || []);
+                for (const msg of assistantMsgs) {
+                    if ((msg as HTMLElement).id?.startsWith('message-postoffice-')) continue;
+                    // 延迟检查，等内容渲染完
+                    setTimeout(() => {
+                        if (_isJunkBubble(msg as HTMLElement)) {
+                            (msg as HTMLElement).style.display = 'none';
+                            console.log("[Postoffice] Hidden junk bubble");
+                        }
+                    }, 100);
+                }
+            }
+        }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    console.log("[Postoffice] ✔ Junk bubble watcher active");
+}
+
+// ─── fetch patch（阻断外部 LLM POST）───
 
 function _patchFetchForPostoffice(): void {
     const originalFetch = window.fetch.bind(window);
@@ -202,8 +265,18 @@ function _patchFetchForPostoffice(): void {
     console.log("[Postoffice] ✔ window.fetch patched");
 }
 
+// ─── 初始化 ───
+
 if (typeof window !== "undefined" && isPostofficeMode()) {
     _startGlobalPolling();
     _patchFetchForPostoffice();
     _watchDOMForUserMessages();
+    // 等 DOM 加载完再启动清理
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+            setTimeout(_watchAndHideJunkBubbles, 500);
+        });
+    } else {
+        setTimeout(_watchAndHideJunkBubbles, 500);
+    }
 }
