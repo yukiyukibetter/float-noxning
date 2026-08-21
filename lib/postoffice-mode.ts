@@ -21,18 +21,21 @@ function _state() {
 
 export function isPostofficeMode(): boolean {
     if (typeof window === "undefined") return false;
-    return localStorage.getItem("float-postoffice-mode") !== "false";
+    const val = localStorage.getItem("float-postoffice-mode");
+    const result = val !== "false";
+    console.log("[Postoffice] ★ isPostofficeMode() called ★ result:", result, "localStorage:", val, "caller:", new Error().stack?.split("\n")[2]?.trim());
+    return result;
 }
 
 export async function sendPostofficeMessage(content: string): Promise<boolean> {
+    console.log("[Postoffice] ★★★ sendPostofficeMessage CALLED ★★★", content.slice(0, 80));
     try {
-        console.log("[Postoffice] Sending message:", content.slice(0, 50));
         const res = await fetch("/api/float-chat", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ content }),
         });
-        console.log("[Postoffice] Send result:", res.ok);
+        console.log("[Postoffice] Send result:", res.ok, res.status);
         return res.ok;
     } catch (err) {
         console.error("[Postoffice] Send error:", err);
@@ -71,16 +74,6 @@ function _startGlobalPolling(): void {
     setInterval(poll, 3000);
 }
 
-/**
- * 核弹级 LLM 拦截：monkey-patch window.fetch
- * sendLLMRequest / sendLLMStreamRequest 用的是原生 fetch，不经过 fetchLlmPayload。
- * 所以必须在 fetch 层拦截。
- * 
- * 规则：
- * - 本站请求（/ 开头或 location.origin）：放行
- * - 外部 GET 请求：放行（CDN、图片等）
- * - 外部 POST 请求：拦截（这就是 LLM API 调用）
- */
 function _patchFetchForPostoffice(): void {
     const originalFetch = window.fetch.bind(window);
     window.fetch = function patchedFetch(
@@ -99,7 +92,6 @@ function _patchFetchForPostoffice(): void {
 
         if (!isLocal && isPost) {
             console.log("[Postoffice] ✘ Blocked external POST (LLM):", url.slice(0, 80));
-            // 返回空的 SSE 流式响应，让 chat-engine 的解析器认为生成完成
             return Promise.resolve(new Response(
                 "data: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
                 {
