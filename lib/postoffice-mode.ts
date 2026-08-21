@@ -1,28 +1,47 @@
 // lib/postoffice-mode.ts
-// Float · Nox♡Ning Edition — 邮局模式 v5.2
-// 改进：GET 不再自动标记已读，注入成功后才 PATCH 标记
-// 这样即使页面刷新丢失 pending，下次轮询还能拉到同样的消息
+// Float · Nox♡Ning Edition — 邮局模式 v6.0
+// 核心改进：用 localStorage 持久化邮局消息，MutationObserver 实时监听容器变化
+// React 每次重渲染后立即重新注入，消息永远不会丢失
 
 export const POSTOFFICE_EVENT = "postoffice-new-messages";
 
+const LS_KEY = "float-postoffice-messages";
+
 declare global {
     interface Window {
-        __postoffice?: {
-            started: boolean;
-            pending: any[];
-            sentTexts: Set<string>;
-            injectedContents: string[];
-        };
+        __postoffice_started?: boolean;
     }
 }
 
-function _state() {
-    if (typeof window === "undefined") return { started: false, pending: [] as any[], sentTexts: new Set<string>(), injectedContents: [] as string[] };
-    if (!window.__postoffice) window.__postoffice = { started: false, pending: [], sentTexts: new Set<string>(), injectedContents: [] };
-    if (!window.__postoffice.sentTexts) window.__postoffice.sentTexts = new Set<string>();
-    if (!window.__postoffice.injectedContents) window.__postoffice.injectedContents = [];
-    return window.__postoffice;
+// ─── localStorage 持久化 ───
+
+interface StoredMessage {
+    id: number;
+    content: string;
+    timestamp: string;
 }
+
+function _getStoredMessages(): StoredMessage[] {
+    try {
+        const raw = localStorage.getItem(LS_KEY);
+        return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+}
+
+function _storeMessage(msg: StoredMessage): void {
+    const msgs = _getStoredMessages();
+    if (msgs.some(m => m.id === msg.id)) return; // 去重
+    msgs.push(msg);
+    // 只保留最近100条
+    while (msgs.length > 100) msgs.shift();
+    localStorage.setItem(LS_KEY, JSON.stringify(msgs));
+}
+
+// ─── 去重集 ───
+
+const _sentTexts = new Set<string>();
+
+// ─── 基础工具 ───
 
 export function isPostofficeMode(): boolean {
     if (typeof window === "undefined") return false;
@@ -37,19 +56,12 @@ export async function sendPostofficeMessage(content: string): Promise<boolean> {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ content }),
         });
-        console.log("[Postoffice] Send result:", res.ok, res.status);
         return res.ok;
     } catch (err) {
         console.error("[Postoffice] Send error:", err);
         return false;
     }
 }
-
-export function drainPendingMessages(): any[] {
-    return _state().pending.splice(0);
-}
-
-// ─── 标记已读（注入成功后调用）───
 
 async function _markAsRead(ids: number[]): Promise<void> {
     try {
@@ -64,22 +76,17 @@ async function _markAsRead(ids: number[]): Promise<void> {
     }
 }
 
-// ─── 接收方向：注入 assistant 气泡 ───
+// ─── DOM 注入 ───
 
-function _injectAssistantBubble(content: string): boolean {
-    const container = document.querySelector('.page-body.chat-scroll-anchored') as HTMLElement | null;
-    if (!container) {
-        console.warn("[Postoffice] No chat container");
-        return false;
-    }
-    return _doInjectBubble(container, content);
-}
+function _injectBubble(container: HTMLElement, content: string, msgId: number): void {
+    // 检查是否已经注入过这条消息
+    if (container.querySelector(`[data-postoffice-id="${msgId}"]`)) return;
 
-function _doInjectBubble(container: HTMLElement, content: string): boolean {
     const wrapper = document.createElement('div');
     wrapper.className = 'chat-msg-wrapper';
     wrapper.setAttribute('data-role', 'assistant');
-    wrapper.id = `message-postoffice-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    wrapper.setAttribute('data-postoffice-id', String(msgId));
+    wrapper.id = `message-postoffice-${msgId}`;
 
     const avatar = document.createElement('div');
     avatar.className = 'chat-msg-avatar w-[40px] h-[40px] rounded-[20px] bg-white shrink-0 flex items-center justify-center overflow-hidden';
@@ -103,27 +110,71 @@ function _doInjectBubble(container: HTMLElement, content: string): boolean {
     innerDiv.appendChild(markdown);
     bubble.appendChild(innerDiv);
     contentWrap.appendChild(bubble);
-
     wrapper.appendChild(avatar);
     wrapper.appendChild(contentWrap);
     container.appendChild(wrapper);
 
-    _state().injectedContents.push(content);
-
-    requestAnimationFrame(() => {
-        container.scrollTop = container.scrollHeight;
-    });
-
-    console.log("[Postoffice] ✔ Injected assistant bubble:", content.slice(0, 50));
-    return true;
+    console.log("[Postoffice] ✔ Injected bubble #" + msgId + ":", content.slice(0, 40));
 }
 
-// ─── 轮询（拉取 → 尝试注入 → 成功后标记已读）───
+// ─── 核心：同步所有邮局消息到 DOM ───
+
+function _syncBubblesToDOM(): void {
+    const container = document.querySelector('.page-body.chat-scroll-anchored') as HTMLElement | null;
+    if (!container) return;
+
+    const messages = _getStoredMessages();
+    if (messages.length === 0) return;
+
+    let injectedAny = false;
+    for (const msg of messages) {
+        if (!container.querySelector(`[data-postoffice-id="${msg.id}"]`)) {
+            _injectBubble(container, msg.content, msg.id);
+            injectedAny = true;
+        }
+    }
+
+    if (injectedAny) {
+        requestAnimationFrame(() => {
+            container.scrollTop = container.scrollHeight;
+        });
+    }
+
+    // 隐藏所有非邮局的 assistant 气泡
+    const allAssistant = container.querySelectorAll('[data-role="assistant"]');
+    for (const el of Array.from(allAssistant)) {
+        const htmlEl = el as HTMLElement;
+        if (!htmlEl.id?.startsWith('message-postoffice-')) {
+            htmlEl.style.display = 'none';
+        }
+    }
+}
+
+// ─── MutationObserver：实时监听 DOM 变化 ───
+
+function _startDOMWatcher(): void {
+    // 初始同步
+    _syncBubblesToDOM();
+
+    // 监听所有 DOM 变化
+    const observer = new MutationObserver(() => {
+        // 用 requestAnimationFrame 确保 React 渲染完成后再执行
+        requestAnimationFrame(() => {
+            _syncBubblesToDOM();
+        });
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    console.log("[Postoffice] ✔ DOM watcher active (sync on every mutation)");
+
+    // 额外的定时同步作为保底
+    setInterval(_syncBubblesToDOM, 2000);
+}
+
+// ─── 轮询 ───
 
 function _startGlobalPolling(): void {
-    const s = _state();
-    if (s.started) return;
-    s.started = true;
+    if (window.__postoffice_started) return;
+    window.__postoffice_started = true;
     console.log("[Postoffice] Global polling started");
 
     const poll = async () => {
@@ -133,18 +184,15 @@ function _startGlobalPolling(): void {
             const data = await res.json();
             if (data.messages?.length > 0) {
                 console.log("[Postoffice] New messages:", data.messages.length);
-                const successIds: number[] = [];
+                const ids: number[] = [];
                 for (const msg of data.messages) {
-                    const injected = _injectAssistantBubble(msg.content);
-                    if (injected) {
-                        successIds.push(msg.id);
-                    }
-                    // 不再存 pending——因为没标记已读，下次轮询还会拉到
+                    _storeMessage({ id: msg.id, content: msg.content, timestamp: msg.created_at });
+                    ids.push(msg.id);
                 }
-                // 只标记成功注入的为已读
-                if (successIds.length > 0) {
-                    _markAsRead(successIds);
-                }
+                // 存入 localStorage 后立即标记已读（因为消息已持久化，不会丢失）
+                _markAsRead(ids);
+                // 触发同步
+                _syncBubblesToDOM();
                 window.dispatchEvent(
                     new CustomEvent(POSTOFFICE_EVENT, { detail: { messages: data.messages } }),
                 );
@@ -158,7 +206,7 @@ function _startGlobalPolling(): void {
     setInterval(poll, 3000);
 }
 
-// ─── 发送方向：MutationObserver 捕获用户气泡 ───
+// ─── 发送方向 ───
 
 function _watchDOMForUserMessages(): void {
     const observer = new MutationObserver((mutations) => {
@@ -175,11 +223,10 @@ function _watchDOMForUserMessages(): void {
                     const textEl = bubble || msgEl;
                     const text = (textEl as HTMLElement).textContent?.trim();
                     if (!text) continue;
-                    const state = _state();
                     const dedupeKey = `${text}:${Math.floor(Date.now() / 3000)}`;
-                    if (state.sentTexts.has(dedupeKey)) continue;
-                    state.sentTexts.add(dedupeKey);
-                    setTimeout(() => state.sentTexts.delete(dedupeKey), 5000);
+                    if (_sentTexts.has(dedupeKey)) continue;
+                    _sentTexts.add(dedupeKey);
+                    setTimeout(() => _sentTexts.delete(dedupeKey), 5000);
                     console.log("[Postoffice] ★★★ DOM: user bubble detected! ★★★", text.slice(0, 50));
                     sendPostofficeMessage(text);
                 }
@@ -187,68 +234,12 @@ function _watchDOMForUserMessages(): void {
         }
     });
     observer.observe(document.body, { childList: true, subtree: true });
-    console.log("[Postoffice] ✔ DOM MutationObserver active");
-}
-
-// ─── 清理 LLM sink 产生的垃圾气泡 ───
-
-function _hideNonPostofficeBubbles(): void {
-    const allAssistant = document.querySelectorAll('[data-role="assistant"]');
-    for (const el of Array.from(allAssistant)) {
-        const htmlEl = el as HTMLElement;
-        if (!htmlEl.id?.startsWith('message-postoffice-')) {
-            htmlEl.style.display = 'none';
-        }
-    }
-}
-
-function _watchAndHideJunkBubbles(): void {
-    _hideNonPostofficeBubbles();
-
-    const observer = new MutationObserver((mutations) => {
-        for (const mutation of mutations) {
-            for (const node of Array.from(mutation.addedNodes)) {
-                if (!(node instanceof HTMLElement)) continue;
-                if (node.id?.startsWith('message-postoffice-')) continue;
-                const assistantMsgs = node.matches?.('[data-role="assistant"]')
-                    ? [node]
-                    : Array.from(node.querySelectorAll?.('[data-role="assistant"]') || []);
-                for (const msg of assistantMsgs) {
-                    const htmlEl = msg as HTMLElement;
-                    if (htmlEl.id?.startsWith('message-postoffice-')) continue;
-                    setTimeout(() => {
-                        htmlEl.style.display = 'none';
-                        console.log("[Postoffice] Hidden non-postoffice assistant bubble");
-                    }, 50);
-                }
-            }
-        }
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-    console.log("[Postoffice] ✔ Junk bubble watcher active");
-}
-
-// ─── React 重渲染后重新注入 ───
-
-function _watchForReactRerender(): void {
-    setInterval(() => {
-        const s = _state();
-        if (s.injectedContents.length === 0) return;
-        const container = document.querySelector('.page-body.chat-scroll-anchored') as HTMLElement | null;
-        if (!container) return;
-        const ourBubbles = container.querySelectorAll('[id^="message-postoffice-"]');
-        if (ourBubbles.length === 0 && s.injectedContents.length > 0) {
-            console.log("[Postoffice] React cleared our bubbles, re-injecting", s.injectedContents.length);
-            for (const content of s.injectedContents) {
-                _doInjectBubble(container, content);
-            }
-        }
-    }, 2000);
+    console.log("[Postoffice] ✔ Send watcher active");
 }
 
 // ─── fetch patch ───
 
-function _patchFetchForPostoffice(): void {
+function _patchFetch(): void {
     const originalFetch = window.fetch.bind(window);
     window.fetch = function patchedFetch(
         input: RequestInfo | URL,
@@ -259,39 +250,25 @@ function _patchFetchForPostoffice(): void {
             : input instanceof URL
                 ? input.toString()
                 : (input as Request).url;
-
         const isLocal = url.startsWith("/") || url.startsWith(window.location.origin);
         const isPost = init?.method?.toUpperCase() === "POST"
             || (typeof input !== "string" && !(input instanceof URL) && (input as Request).method?.toUpperCase() === "POST");
-
         if (!isLocal && isPost) {
-            console.log("[Postoffice] ✘ Blocked external POST (LLM):", url.slice(0, 80));
             return Promise.resolve(new Response(
                 "data: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
-                {
-                    status: 200,
-                    headers: { "content-type": "text/event-stream" },
-                },
+                { status: 200, headers: { "content-type": "text/event-stream" } },
             ));
         }
-
         return originalFetch(input, init);
     } as typeof window.fetch;
-    console.log("[Postoffice] ✔ window.fetch patched");
+    console.log("[Postoffice] ✔ fetch patched");
 }
 
 // ─── 初始化 ───
 
 if (typeof window !== "undefined" && isPostofficeMode()) {
     _startGlobalPolling();
-    _patchFetchForPostoffice();
+    _patchFetch();
     _watchDOMForUserMessages();
-    _watchForReactRerender();
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => {
-            setTimeout(_watchAndHideJunkBubbles, 500);
-        });
-    } else {
-        setTimeout(_watchAndHideJunkBubbles, 500);
-    }
+    _startDOMWatcher();
 }
