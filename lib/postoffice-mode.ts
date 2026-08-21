@@ -1,13 +1,27 @@
-// lib/postoffice-mode.ts — v7.1
-// v7.0 → v7.1: 双向消息同步。GET返回nox+ning，刷新/换设备后也能看到凝凝发的消息。
+// lib/postoffice-mode.ts — v7.2
+// v7.1 → v7.2: 加localStorage版本迁移，旧数据自动清空重拉
 
 export const POSTOFFICE_EVENT = "postoffice-new-messages";
 const LS_KEY = "float-postoffice-messages";
 const LS_SENT_KEY = "float-postoffice-sent";
 const LS_USER_TS_KEY = "float-postoffice-user-ts";
+const LS_VERSION_KEY = "float-postoffice-version";
+const CURRENT_VERSION = "7.2";
 declare global { interface Window { __postoffice_started?: boolean; } }
 interface StoredMessage { id: number; content: string; timestamp: string; sender: string; }
 interface SentRecord { text: string; ts: number; }
+
+// ——— 版本迁移：旧版本数据没有sender字段，清空重拉 ———
+function _migrateIfNeeded(): void {
+    try {
+        const v = localStorage.getItem(LS_VERSION_KEY);
+        if (v !== CURRENT_VERSION) {
+            localStorage.removeItem(LS_KEY);
+            localStorage.setItem(LS_VERSION_KEY, CURRENT_VERSION);
+            console.log("[Postoffice] ✔ Migrated: cleared old messages, will re-fetch from Supabase");
+        }
+    } catch {}
+}
 
 function _getStoredMessages(): StoredMessage[] { try { const r = localStorage.getItem(LS_KEY); const m: StoredMessage[] = r ? JSON.parse(r) : []; m.sort((a,b) => (a.timestamp||"").localeCompare(b.timestamp||"")); return m; } catch { return []; } }
 function _storeMessage(msg: StoredMessage): boolean { const m = _getStoredMessages(); if (m.some(x => x.id === msg.id)) return false; m.push(msg); while (m.length > 200) m.shift(); localStorage.setItem(LS_KEY, JSON.stringify(m)); return true; }
@@ -20,7 +34,6 @@ function _setUserTimestamp(k: string, ts: string): void { try { const m = _getUs
 export function isPostofficeMode(): boolean { return typeof window !== "undefined" && localStorage.getItem("float-postoffice-mode") !== "false"; }
 export async function sendPostofficeMessage(content: string): Promise<boolean> { try { return (await fetch("/api/float-chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }) })).ok; } catch { return false; } }
 
-// ——— 动态头像系统 ———
 let _avatarSrc = "/mascot.png";
 
 async function _loadAvatarFromDB(): Promise<void> {
@@ -42,18 +55,14 @@ async function _loadAvatarFromDB(): Promise<void> {
             const chars = JSON.parse(result.value);
             if (Array.isArray(chars) && chars.length > 0 && chars[0]?.avatar) {
                 _avatarSrc = chars[0].avatar;
-                console.log("[Postoffice] ✔ Avatar loaded from DB");
                 document.querySelectorAll('[data-postoffice-id] .chat-msg-avatar img').forEach(img => {
                     (img as HTMLImageElement).src = _avatarSrc;
                 });
             }
         }
-    } catch (e) {
-        console.warn("[Postoffice] Avatar load failed, using default", e);
-    }
+    } catch {}
 }
 
-// ——— v7.1: 统一注入函数，根据sender决定样式 ———
 function _injectBubble(c: HTMLElement, content: string, msgId: number, timestamp: string, sender: string): void {
     if (c.querySelector(`[data-postoffice-id="${msgId}"]`)) return;
     const isNox = sender === "nox";
@@ -64,7 +73,6 @@ function _injectBubble(c: HTMLElement, content: string, msgId: number, timestamp
     w.setAttribute("data-postoffice-ts", timestamp);
     w.id = `message-postoffice-${msgId}`;
 
-    // 气泡内容
     const cw = document.createElement("div");
     cw.className = "chat-msg-content-wrap flex flex-col min-w-0 max-w-[70%]";
     const b = document.createElement("div");
@@ -78,7 +86,6 @@ function _injectBubble(c: HTMLElement, content: string, msgId: number, timestamp
     md.appendChild(p); d.appendChild(md); b.appendChild(d); cw.appendChild(b);
 
     if (isNox) {
-        // assistant: 头像在左 → avatar + content
         const av = document.createElement("div");
         av.className = "chat-msg-avatar w-[40px] h-[40px] rounded-[20px] bg-white shrink-0 flex items-center justify-center overflow-hidden";
         const img = document.createElement("img"); img.className = "w-full h-full object-cover rounded-[20px]"; img.alt = "澈澈"; img.src = _avatarSrc;
@@ -86,7 +93,6 @@ function _injectBubble(c: HTMLElement, content: string, msgId: number, timestamp
         w.appendChild(av);
         w.appendChild(cw);
     } else {
-        // user: 内容 + 头像在右
         const av = document.createElement("div");
         av.className = "chat-msg-avatar w-[40px] h-[40px] rounded-[20px] bg-[var(--c-page-body-bg,#fff)] shrink-0 flex items-center justify-center overflow-hidden";
         av.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--c-text,#666)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>';
@@ -94,7 +100,6 @@ function _injectBubble(c: HTMLElement, content: string, msgId: number, timestamp
         w.appendChild(av);
     }
 
-    // 按时间戳插入到正确位置
     const ch = Array.from(c.children); let it: Element | null = null;
     for (const x of ch) { const ts = (x as HTMLElement).getAttribute("data-postoffice-ts"); if (ts && ts > timestamp) { it = x; break; } }
     if (it) c.insertBefore(w, it); else c.appendChild(w);
@@ -102,26 +107,18 @@ function _injectBubble(c: HTMLElement, content: string, msgId: number, timestamp
 
 function _extractUserBubbleText(el: HTMLElement): string { const b = el.querySelector('.chat-bubble-role-user, [class*="bubble"]'); return ((b || el).textContent?.trim() || "").slice(0, 100); }
 
-// ——— v7.1: _syncBubblesToDOM 注入所有消息（nox+ning） ———
 function _syncBubblesToDOM(): void {
     const c = document.querySelector(".page-body.chat-scroll-anchored") as HTMLElement | null; if (!c) return;
     const msgs = _getStoredMessages(); if (msgs.length === 0) return;
-
-    // 检查是否有Float原生的user气泡（说明当前会话有本地数据）
     const hasNativeUserBubbles = c.querySelectorAll('.chat-msg-wrapper[data-role="user"]:not([data-postoffice-id])').length > 0;
-
     let any = false;
     for (const m of msgs) {
         if (c.querySelector(`[data-postoffice-id="${m.id}"]`)) continue;
-        // 如果有本地user气泡，只注入nox消息（ning的已经由Float原生渲染了）
-        // 如果没有本地user气泡（刷新/换设备），注入所有消息
         if (hasNativeUserBubbles && m.sender === "ning") continue;
         _injectBubble(c, m.content, m.id, m.timestamp, m.sender);
         any = true;
     }
     if (any) requestAnimationFrame(() => { c.scrollTop = c.scrollHeight; });
-
-    // 隐藏Float原生的assistant气泡（user气泡保留）
     c.querySelectorAll('[data-role="assistant"]').forEach(el => { const h = el as HTMLElement; if (!h.id?.startsWith("message-postoffice-")) h.style.display = "none"; });
 }
 
@@ -211,6 +208,7 @@ function _killErrorText(): void {
 export function drainPendingMessages(): any[] { return []; }
 
 if (typeof window !== "undefined" && isPostofficeMode()) {
+    _migrateIfNeeded();
     _injectSuppressorCSS();
     _patchURLConstructor();
     _startGlobalPolling();
@@ -219,5 +217,5 @@ if (typeof window !== "undefined" && isPostofficeMode()) {
     _watchDOMForUserMessages();
     _startDOMWatcher();
     _loadAvatarFromDB();
-    console.log("[Postoffice] ✔ v7.1 initialized");
+    console.log("[Postoffice] ✔ v7.2 initialized");
 }
