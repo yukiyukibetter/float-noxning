@@ -27,7 +27,6 @@ const compressImg = (file: File, max = 200): Promise<string> =>
     reader.readAsDataURL(file);
   });
 
-/* ── 云端配置读写 ── */
 const cfgGet = async (): Promise<Record<string,string>> => {
   try {
     const r = await fetch(api("float_config?select=key,value"), { headers: H });
@@ -48,6 +47,9 @@ const cfgSet = async (key: string, value: string) => {
   } catch {}
 };
 
+/* ── safe area padding ── */
+const safeTop = { paddingTop: "calc(env(safe-area-inset-top, 0px) + 14px)" };
+
 export default function Chat() {
   const [msgs, setMsgs] = useState<M[]>([]);
   const [input, setInput] = useState("");
@@ -62,10 +64,8 @@ export default function Chat() {
   const ref = useRef<HTMLDivElement>(null);
   const ids = useRef(new Set<number>());
 
-  /* ── 初始化：云端优先，localStorage fallback ── */
   useEffect(() => {
     (async () => {
-      // 先读 localStorage 快速显示
       try {
         setCss(localStorage.getItem("nn-css") || "");
         setAvNox(localStorage.getItem("nn-av-nox") || "");
@@ -73,7 +73,6 @@ export default function Chat() {
         setWall(localStorage.getItem("nn-wall") || "");
         setName(localStorage.getItem("nn-name") || "澈澈♡");
       } catch {}
-      // 再读云端覆盖
       const cfg = await cfgGet();
       if (cfg.av_nox) { setAvNox(cfg.av_nox); try { localStorage.setItem("nn-av-nox", cfg.av_nox); } catch {} }
       if (cfg.av_ning) { setAvNing(cfg.av_ning); try { localStorage.setItem("nn-av-ning", cfg.av_ning); } catch {} }
@@ -83,7 +82,6 @@ export default function Chat() {
     })();
   }, []);
 
-  /* ── 强制 flex 属性（绕过 Float 全局 CSS） ── */
   useEffect(() => {
     const fix = () => {
       document.querySelectorAll<HTMLElement>('.chat-msg-wrapper[data-role="user"]').forEach(el => {
@@ -137,9 +135,7 @@ export default function Chat() {
     inp.click();
   };
 
-  /* ── 保存：同时写 localStorage + 云端 ── */
   const save = async () => {
-    // localStorage（CSS主题只存本地）
     try {
       localStorage.setItem("nn-css", css);
       localStorage.setItem("nn-av-nox", avNox);
@@ -147,7 +143,6 @@ export default function Chat() {
       localStorage.setItem("nn-wall", wall);
       localStorage.setItem("nn-name", name);
     } catch {}
-    // 云端同步（头像 + 名字 + 壁纸）
     await Promise.all([
       cfgSet("av_nox", avNox),
       cfgSet("av_ning", avNing),
@@ -157,7 +152,6 @@ export default function Chat() {
     setPage("chat");
   };
 
-  /* ── 时间显示：今天只显时分，其他日期显示 M/D HH:MM ── */
   const time = (ts: string) => {
     try {
       const d = new Date(ts), now = new Date();
@@ -209,7 +203,8 @@ export default function Chat() {
   if (page === "settings") return (
     <div className="chat-app" style={{height:"100dvh",display:"flex",flexDirection:"column",background:"var(--c-page-body-bg,#f5f5f5)"}}>
       <style>{css}</style>
-      <div className="page-header" style={{padding:"14px 16px",display:"flex",alignItems:"center",gap:12,background:"var(--c-header-bg,#f2f2f2)",borderBottom:"1px solid rgba(0,0,0,0.08)",flexShrink:0}}>
+      {/* ★ 顶栏加 safe-area-inset-top 适配灵动岛 */}
+      <div className="page-header" style={{...safeTop,paddingLeft:16,paddingRight:16,paddingBottom:14,display:"flex",alignItems:"center",gap:12,background:"var(--c-header-bg,#f2f2f2)",borderBottom:"1px solid rgba(0,0,0,0.08)",flexShrink:0}}>
         <button onClick={()=>setPage("chat")} className="page-back-btn" style={{background:"none",border:"none",fontSize:18,cursor:"pointer",padding:"4px 8px",color:"var(--c-text,#333)"}}>←</button>
         <span className="page-title" style={{fontSize:16,fontWeight:600,color:"var(--c-text-title,#000)"}}>⚙ 设置</span>
       </div>
@@ -262,7 +257,8 @@ export default function Chat() {
         .nn-msg-row[data-role="user"] .nn-time{text-align:right}
       `}</style>
 
-      <div className="page-header" style={{padding:"14px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",background:"var(--c-header-bg,rgba(245,245,245,0.9))",backdropFilter:"blur(12px)",borderBottom:"1px solid rgba(0,0,0,0.08)",flexShrink:0,zIndex:100}}>
+      {/* ★ 顶栏加 safe-area-inset-top 适配灵动岛 */}
+      <div className="page-header" style={{...safeTop,paddingLeft:16,paddingRight:16,paddingBottom:14,display:"flex",alignItems:"center",justifyContent:"space-between",background:"var(--c-header-bg,rgba(245,245,245,0.9))",backdropFilter:"blur(12px)",borderBottom:"1px solid rgba(0,0,0,0.08)",flexShrink:0,zIndex:100}}>
         <div className="page-header-content" style={{display:"flex",alignItems:"center",gap:10,flex:1}}>
           {noxAv(36)}
           <span className="page-title" style={{fontSize:17,fontWeight:600,color:"var(--c-text-title,#000)"}}>{name}</span>
@@ -270,7 +266,8 @@ export default function Chat() {
         <button onClick={()=>setPage("settings")} aria-label="设置" style={{background:"none",border:"none",fontSize:22,cursor:"pointer",padding:"4px 8px",color:"var(--c-text,#666)",lineHeight:1}}>⚙️</button>
       </div>
 
-      <div ref={ref} className="page-body chat-room-main-pane chat-scroll-anchored" style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:2,padding:"8px 0"}}>
+      {/* ★ 消息列表加底部 padding 防止被输入框遮挡 */}
+      <div ref={ref} className="page-body chat-room-main-pane chat-scroll-anchored" style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:2,padding:"8px 0 20px 0"}}>
         {msgs.map(m => {
           const dl = dateL(m.created_at), show = dl !== ld; if (show) ld = dl;
           const isNox = m.sender === "nox";
