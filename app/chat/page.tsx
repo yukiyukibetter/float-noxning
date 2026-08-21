@@ -7,7 +7,6 @@ const H:{[k:string]:string} = { "Content-Type": "application/json", apikey: SK, 
 const api = (p: string) => `${SB}/rest/v1/${p}`;
 interface M { id: number; sender: string; content: string; created_at: string; }
 
-/* ── 图片压缩（头像上传用） ── */
 const compressImg = (file: File, max = 200): Promise<string> =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -51,6 +50,23 @@ export default function Chat() {
     } catch {}
   }, []);
 
+  /* ── 强制设置 flex 属性（绕过 Float 全局 CSS 的 !important） ── */
+  useEffect(() => {
+    const obs = new MutationObserver(() => {
+      document.querySelectorAll<HTMLElement>('.chat-msg-wrapper[data-role="user"]').forEach(el => {
+        el.style.setProperty('flex-direction', 'row-reverse', 'important');
+        el.style.setProperty('justify-content', 'flex-start', 'important');
+      });
+      document.querySelectorAll<HTMLElement>('.chat-msg-wrapper[data-role="assistant"]').forEach(el => {
+        el.style.setProperty('flex-direction', 'row', 'important');
+        el.style.setProperty('justify-content', 'flex-start', 'important');
+      });
+    });
+    const container = ref.current;
+    if (container) obs.observe(container, { childList: true, subtree: true });
+    return () => obs.disconnect();
+  }, []);
+
   const load = useCallback(async () => {
     try {
       const r = await fetch(api("float_messages?order=created_at.desc&limit=100"), { headers: { ...H, Prefer: "" } });
@@ -74,7 +90,6 @@ export default function Chat() {
     setBusy(false);
   };
 
-  /* ── 选择图片上传头像 ── */
   const pickAvatar = (who: "nox" | "ning") => {
     const inp = document.createElement("input");
     inp.type = "file"; inp.accept = "image/*";
@@ -111,7 +126,6 @@ export default function Chat() {
         <svg viewBox="0 0 24 24" width={s*0.5} height={s*0.5} fill="none" stroke="#999" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
       </div>;
 
-  /* ── 头像预览组件（设置页用） ── */
   const avatarPreview = (who: "nox" | "ning", src: string, label: string) => (
     <div style={{display:"flex",alignItems:"center",gap:12,padding:"8px 0"}}>
       <div style={{width:56,height:56,borderRadius:28,overflow:"hidden",flexShrink:0,border:"2px solid rgba(214,90,124,0.3)"}}>
@@ -169,9 +183,9 @@ export default function Chat() {
       <style>{css}</style>
       <style>{`
         .chat-app{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
-        .chat-msg-wrapper{display:flex!important;gap:8px;padding:4px 8px;align-items:flex-start;width:100%!important;box-sizing:border-box!important}
-        .chat-msg-wrapper[data-role="user"]{justify-content:flex-end!important;flex-direction:row!important}
-        .chat-msg-wrapper[data-role="assistant"]{justify-content:flex-start!important;flex-direction:row!important}
+        .nn-msg-row{display:flex!important;gap:8px;padding:4px 8px;align-items:flex-start;width:100%;box-sizing:border-box}
+        .nn-msg-row[data-role="user"]{flex-direction:row-reverse;justify-content:flex-start}
+        .nn-msg-row[data-role="assistant"]{flex-direction:row;justify-content:flex-start}
         .chat-msg-content-wrap{max-width:75%;min-width:0}
         .chat-msg-avatar{width:36px;height:36px;border-radius:18px;overflow:hidden;flex-shrink:0;position:relative}
         .chat-msg-avatar img{width:100%;height:100%;object-fit:cover}
@@ -183,7 +197,7 @@ export default function Chat() {
         .chat-scroll-anchored{-webkit-overflow-scrolling:touch}
         .nn-date{text-align:center;padding:12px 0 4px;font-size:12px;color:#999}
         .nn-time{font-size:11px;color:#aaa;margin-top:2px;padding:0 4px}
-        .nn-time-right{text-align:right}
+        .nn-msg-row[data-role="user"] .nn-time{text-align:right}
       `}</style>
 
       {/* Header */}
@@ -202,30 +216,15 @@ export default function Chat() {
           const isNox = m.sender === "nox";
           return <div key={m.id}>
             {show && <div className="nn-date">{dl}</div>}
-            <div className="chat-msg-wrapper" data-role={isNox?"assistant":"user"}>
-              {isNox ? (
-                /* 澈澈的消息：[头像] [气泡]  靠左 */
-                <>
-                  <div className="chat-msg-avatar">{noxAv(36)}</div>
-                  <div className="chat-msg-content-wrap" style={{display:"flex",flexDirection:"column"}}>
-                    <div className="chat-bubble-role-assistant chat-bubble-role-mascot" data-ui="bubble-bot">
-                      <div><div className="chat-markdown"><div className="chat-markdown-paragraph">{m.content}</div></div></div>
-                    </div>
-                    <div className="nn-time">{time(m.created_at)}</div>
-                  </div>
-                </>
-              ) : (
-                /* 凝凝的消息：[气泡] [头像]  靠右 */
-                <>
-                  <div className="chat-msg-content-wrap" style={{display:"flex",flexDirection:"column",alignItems:"flex-end"}}>
-                    <div className="chat-bubble-role-user" data-ui="bubble-user">
-                      <div><div className="chat-markdown"><div className="chat-markdown-paragraph">{m.content}</div></div></div>
-                    </div>
-                    <div className="nn-time nn-time-right">{time(m.created_at)}</div>
-                  </div>
-                  <div className="chat-msg-avatar">{ningAv(36)}</div>
-                </>
-              )}
+            {/* 用 nn-msg-row 替代 chat-msg-wrapper，避免 Float 全局 CSS 干扰 */}
+            <div className="nn-msg-row chat-msg-wrapper" data-role={isNox?"assistant":"user"}>
+              <div className="chat-msg-avatar">{isNox ? noxAv(36) : ningAv(36)}</div>
+              <div className="chat-msg-content-wrap" style={{display:"flex",flexDirection:"column"}}>
+                <div className={isNox?"chat-bubble-role-assistant chat-bubble-role-mascot":"chat-bubble-role-user"} data-ui={isNox?"bubble-bot":"bubble-user"}>
+                  <div><div className="chat-markdown"><div className="chat-markdown-paragraph">{m.content}</div></div></div>
+                </div>
+                <div className="nn-time">{time(m.created_at)}</div>
+              </div>
             </div>
           </div>;
         })}
